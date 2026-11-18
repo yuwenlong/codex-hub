@@ -2,7 +2,7 @@
 
 [English](README.md) · 简体中文
 
-Codex Hub 在 Codex CLI 的输入框正下方显示多行 HUD。安装后，新开一个交互式 Bash、Zsh 或 PowerShell 窗口，像平时一样运行下面的命令。
+Codex Hub 在 Codex CLI 的输入框正下方显示多行 HUD。按下方说明安装并加载对应 shell 的启动入口，然后像平时一样运行下面的命令。
 
 ```sh
 codex
@@ -21,14 +21,20 @@ Codex 记录了活动后，相应的行才会出现。HUD 在终端里的 Codex 
 ### Bash 或 Zsh（Linux、macOS、WSL）
 
 ```bash
-(installer=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh) && [ -n "$installer" ] && bash -c "$installer")
+(installer=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh) && [ -n "$installer" ] &&
+  command env "CODEX_HOME=${CODEX_HOME-}" "CODEX_HUB_SHELL=${CODEX_HUB_SHELL:-${ZSH_VERSION:+zsh}${BASH_VERSION:+bash}}" "ZDOTDIR=${ZDOTDIR-}" bash -c "$installer") &&
+  case $- in *i*) . "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/activate.sh" ;; esac
 ```
+
+这段命令会在当前交互式 shell 中加载 Codex Hub，安装后即可在同一终端运行 `codex`。已有终端仍显示原生单行时，可查看[排障步骤](#诊断与显式启动)。
 
 ### Windows PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.ps1 | iex
 ```
+
+安装结束后，新开一个交互式 PowerShell 窗口并运行 `codex`。
 
 ### Windows CMD
 
@@ -44,15 +50,17 @@ if defined CODEX_HOME set "CODEX_HUB_CLI=%CODEX_HOME%\codex-hub\bin\codex-hub.mj
 node "%CODEX_HUB_CLI%" launch --
 ```
 
-安装器从 GitHub 最新正式发行版下载 `codex-hub.zip`，并将运行文件放在 `$CODEX_HOME/codex-hub`，默认为 `~/.codex/codex-hub`。已设置 `CODEX_HOME` 时，安装、启动和卸载都使用同一个值。
+安装器从 GitHub 最新正式发行版下载 `codex-hub.zip`，并将运行文件放在 `$CODEX_HOME/codex-hub`，默认为 `~/.codex/codex-hub`。若使用自定义 `CODEX_HOME`，请在运行卸载器等独立命令前导出该变量，安装、启动和卸载都使用同一个值。
 
 下载发行包遇到临时连接故障或 HTTP 429、503 等响应时，安装器会自动重试。如果开头的脚本下载失败，重新运行同一条命令即可。
 
-Linux、macOS 和 WSL 的安装器根据 `$SHELL` 选择 Bash 或 Zsh。Windows 使用当前用户的 PowerShell 全宿主配置文件。已有的 `codex` 别名和函数优先。重新运行同一条安装命令可以升级，完成后请新开交互式 shell。首次安装时若想手动启动，可在运行安装器之前设置 `CODEX_HUB_SHELL=none`，之后使用[显式启动命令](#诊断与显式启动)。
+Bash 和 Zsh 的在线命令会为运行它的 shell 配置启动入口。Windows 使用当前用户的 PowerShell 全宿主配置文件。已有的 `codex` 别名和函数优先。重新运行同一条安装命令可以升级。首次安装时若想手动启动，可导出 `CODEX_HUB_SHELL=none` 后安装，再使用[显式启动命令](#诊断与显式启动)。若当前终端已加载 Codex Hub，设置 `CODEX_HUB_SHELL=none` 并重装后可新开终端，或在当前 Bash 或 Zsh 运行 `CODEX_HUB_BYPASS=1 codex`。
+
+如果在已经加载旧版启动入口的终端中升级，并使用自定义配置目录，请在这个终端运行 `export CODEX_HOME` 后再启动 `codex`。
 
 ## 使用 HUD
 
-输入 `codex` 新建会话，或用 `codex resume --last` 恢复最近会话。启动器调用 `PATH` 上的 Codex，界面覆盖仅对本次启动生效。`codex exec`、`codex app-server`、帮助和没有终端的调用保持原生行为。显式指定 `--no-alt-screen`、`--remote`，或为本次启动自定义终端标题或状态栏时，也会走原生 CLI。
+输入 `codex` 新建会话。运行 `codex resume` 可选择会话，也可以直接指定会话 ID 恢复。启动器调用 `PATH` 上的 Codex，界面覆盖仅对本次启动生效。`codex exec`、`codex app-server`、帮助和没有终端的调用保持原生行为。显式指定 `--no-alt-screen`、`--remote`，或为本次启动自定义终端标题或状态栏时，也会走原生 CLI。
 
 Codex CLI 0.170.0 对带命令行界面覆盖的会话使用内嵌的 app-server。若本次需要沿用原有的共享后台服务器设置，可在 Bash 或 Zsh 运行 `CODEX_HUB_BYPASS=1 codex`，或在 PowerShell 运行 `& (Get-Command codex -CommandType Application | Select-Object -First 1).Source`。
 
@@ -75,6 +83,20 @@ Codex CLI 0.170.0 对带命令行界面覆盖的会话使用内嵌的 app-server
 未加载 shell 接入配置时，也可以显式启动。用 `doctor` 检查当前生效的状态栏设置，`status` 打印一次活动快照，`watch` 每 2.5 秒刷新一次，`preview` 查看示例数据。对话框打开或终端太窄时，Codex 会回到原生显示。
 
 ### Bash 或 Zsh
+
+安装或重开 Codex 后仍看到 `model · project · branch ...` 原生单行时，先在 Codex 中运行 `/exit`，从退出时打印的恢复命令中复制会话 ID。若已安装 v0.2.2 或更新版本，且当前终端与安装时配置的 shell 和启动文件一致，在原终端运行以下命令，将 `SESSION_ID` 替换为刚复制的 ID。
+
+```bash
+if [ -n "${CODEX_HOME-}" ]; then export CODEX_HOME; fi
+. "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/activate.sh" && codex resume SESSION_ID
+```
+
+使用旧版、当前 shell 与安装时配置的 shell 不一致、已有优先的 `codex` 别名或函数，或者加载后仍显示原生单行时，可通过显式启动命令恢复会话。
+
+```bash
+command env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" \
+  node "${CODEX_HOME:-$HOME/.codex}/codex-hub/bin/codex-hub.mjs" launch -- resume SESSION_ID
+```
 
 ```bash
 codex_hub_cli="${CODEX_HOME:-$HOME/.codex}/codex-hub/bin/codex-hub.mjs"

@@ -303,6 +303,27 @@ test('keeps user bytes added to an originally absent shared profile', posix, t =
   assert.deepEqual(readFileSync(profile), Buffer.concat([prefix, suffix]));
 });
 
+test('inherits profile creation from an installed 0.2.1 launcher block', posix, t => {
+  const { root, home, env } = fixture(t, '/bin/zsh');
+  const profile = join(root, '.zshrc');
+  const statePath = join(home, '.codex-hub-shell.json');
+  updateShellIntegration(home, 'install', env);
+  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  const current = state.entries[0].block;
+  const prior = current.replaceAll('command env "CODEX_HOME=${CODEX_HOME:-${HOME-}/.codex}" ', 'command ');
+  assert.notEqual(prior, current);
+  state.entries[0].block = prior;
+  writeFileSync(profile, prior);
+  writeFileSync(statePath, JSON.stringify(state));
+
+  const other = join(root, 'other');
+  mkdirSync(other);
+  updateShellIntegration(other, 'install', { ...env, CODEX_HOME: other });
+  updateShellIntegration(home, 'uninstall', env);
+  updateShellIntegration(other, 'uninstall', { ...env, CODEX_HOME: other });
+  assert.equal(existsSync(profile), false);
+});
+
 test('does not inherit profile creation from an incomplete marker block', posix, t => {
   const { root, home, change } = fixture(t, '/bin/zsh');
   const profile = join(root, '.zshrc');

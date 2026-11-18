@@ -1,6 +1,6 @@
 {
   "name": "codex-hub",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Native status line and session activity view for Codex CLI",
   "license": "MIT",

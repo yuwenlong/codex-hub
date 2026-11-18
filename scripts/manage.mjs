@@ -6,10 +6,11 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bundledDependencyFiles, dependencyLicenses, hostDependencyFiles } from '../lib/runtime-deps.mjs';
-import { updateShellIntegration } from '../lib/shell.mjs';
+import { configuredShell, shellQuote, updateShellIntegration } from '../lib/shell.mjs';
 
 const source = resolve(fileURLToPath(new URL('../', import.meta.url)));
 const cli = 'bin/codex-hub.mjs';
+const activation = 'scripts/activate.sh';
 const marker = '.codex-hub-managed';
 const owner = 'codex-hub-runtime-v1';
 const transactionName = '.codex-hub-transaction.json';
@@ -17,12 +18,12 @@ const stagingPrefix = '.codex-hub-runtime-';
 const folders = ['bin', 'lib', 'scripts'];
 const baseFiles = ['package.json', 'LICENSE', cli, 'scripts/manage.mjs'];
 const required = [
-  ...baseFiles, 'lib/activity.mjs', 'lib/app-server.mjs', 'lib/hud-metrics.mjs', 'lib/installation.mjs',
+  ...baseFiles, activation, 'lib/activity.mjs', 'lib/app-server.mjs', 'lib/hud-metrics.mjs', 'lib/installation.mjs',
   'lib/launch.mjs', 'lib/runtime-deps.mjs', 'lib/shell.mjs', 'lib/terminal-host.mjs', ...hostDependencyFiles(),
 ];
 const library = /^lib\/[\w.-]+\.mjs$/u;
 const dependencyFiles = new Set([...bundledDependencyFiles, ...dependencyLicenses]);
-const managedFile = file => baseFiles.includes(file) || library.test(file) || dependencyFiles.has(file);
+const managedFile = file => baseFiles.includes(file) || file === activation || library.test(file) || dependencyFiles.has(file);
 const inspect = path => lstatSync(path, { bigint: true, throwIfNoEntry: false });
 const fileKey = name => process.platform === 'win32' ? name.toLowerCase() : name;
 
@@ -142,7 +143,7 @@ async function configure(directory, home, command, { publish, upgrade = false, e
     });
     if (result.changed) {
       console.log(command === 'install'
-        ? '已配置 Codex Hub 状态栏。请重新打开 Codex。'
+        ? '已配置 Codex 原生状态栏。'
         : '已还原安装前的状态栏。请重新打开 Codex。');
     } else if (result.preserved) {
       console.log('继续使用您后来设置的状态栏。');
@@ -411,6 +412,21 @@ async function main() {
   try {
     await manage(home, command);
     updateShellIntegration(home, command);
+    if (command === 'install') {
+      const shell = configuredShell(home);
+      if (shell === 'bash' || shell === 'zsh') {
+        const shellName = shell === 'bash' ? 'Bash' : 'Zsh';
+        const runtime = join(home, 'codex-hub');
+        console.log(`在新开的 ${shellName} 中运行 codex。若当前终端也使用 ${shellName} 和同一份启动配置，可先运行以下命令。`);
+        console.log(`  [ "\${CODEX_HOME:-$HOME/.codex}" -ef ${shellQuote(home)} ] && . ${shellQuote(join(runtime, activation))}`);
+        console.log('配置目录或 shell 不匹配时，可用 README 中的当前在线安装命令，或直接启动本次安装。');
+        console.log(`  command env ${shellQuote('CODEX_HOME=' + home)} node ${shellQuote(join(runtime, cli))} launch --`);
+      } else if (shell === 'powershell') {
+        console.log('请新开 PowerShell 窗口，再运行 codex。');
+      } else {
+        console.log('请使用 README 中的显式启动命令打开 Codex Hub。');
+      }
+    }
   } finally {
     rmdirSync(lock);
   }

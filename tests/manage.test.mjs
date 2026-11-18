@@ -46,10 +46,10 @@ createInterface({ input: createReadStream(null, { fd: 0 }) }).on('line', line =>
 });
 `;
 
-async function fixture(t) {
+async function fixture(t, homeName = 'custom home') {
   const temp = await mkdtemp(join(tmpdir(), 'codex hub 安装测试 '));
   t.after(() => rm(temp, { force: true, recursive: true }));
-  const home = join(temp, 'custom home');
+  const home = join(temp, homeName);
   const runtime = join(home, 'codex-hub');
   const config = join(home, 'config.toml');
   const backup = join(home, backupName);
@@ -59,7 +59,7 @@ async function fixture(t) {
   const tools = join(temp, 'test path');
   await mkdir(tools);
   const pathKey = Object.keys(process.env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH';
-  const env = { ...process.env, [pathKey]: tools, CODEX_HOME: 'custom home', CODEX_HUB_SHELL: 'none' };
+  const env = { ...process.env, [pathKey]: tools, CODEX_HOME: homeName, CODEX_HUB_SHELL: 'none' };
   if (process.platform === 'win32') {
     const bin = join(tools, 'node_modules', '@openai', 'codex', 'bin');
     await mkdir(bin, { recursive: true });
@@ -110,6 +110,67 @@ test('installs the pinned terminal modules from the local package', { skip: !bun
   ]);
   assertSuccess(result);
   assert.equal(result.output.trim(), 'function function');
+});
+
+test('install and reinstall explain activation when invoked from a subprocess', { skip: !bundledHost || process.platform === 'win32' }, async t => {
+  const { temp, manage } = await fixture(t);
+  const additionalEnv = { HOME: temp, ZDOTDIR: temp, CODEX_HUB_SHELL: 'zsh' };
+  for (let run = 0; run < 2; run++) {
+    const installed = manage('install', { additionalEnv });
+    assertSuccess(installed);
+    assert.match(installed.output, /新开.*(?:Zsh|Bash)/u);
+    assert.match(installed.output, /当前终端也使用 Zsh/u);
+    assert.match(installed.output, /^  \[ .* -ef .*\] && \. .*\/scripts\/activate\.sh'$/mu);
+    assert.doesNotMatch(installed.output, /请重新打开 Codex/u);
+  }
+  const profile = join(temp, '.zshrc');
+  const edited = (await readFile(profile, 'utf8')).replace('launch --', 'launch -- edited');
+  await writeFile(profile, edited);
+  const skipped = manage('install', { additionalEnv });
+  assertSuccess(skipped);
+  assert.match(skipped.output, /显式启动/u);
+  assert.doesNotMatch(skipped.output, /scripts\/activate\.sh/u);
+  assert.equal(await readFile(profile, 'utf8'), edited);
+});
+
+test('printed activation stays bound to the installed home despite another local CODEX_HOME', {
+  skip: !bundledHost || process.platform === 'win32',
+}, async t => {
+  const { temp, home, runtime, manage } = await fixture(t, "custom 'home'");
+  const receipt = manage('install', { additionalEnv: { HOME: temp, ZDOTDIR: temp, CODEX_HUB_SHELL: 'zsh' } });
+  assertSuccess(receipt);
+  const activate = receipt.output.split('\n').find(line => line.startsWith('  ') && line.includes('/scripts/activate.sh'));
+  assert.ok(activate, receipt.output);
+  await writeFile(join(runtime, 'scripts', 'activate.sh'), 'printf "INSTALLED HOME\\n"\n');
+  const explicit = receipt.output.split('\n').find(line => line.startsWith('  command env '));
+  assert.ok(explicit, receipt.output);
+  await writeFile(join(runtime, 'bin', 'codex-hub.mjs'), 'import { writeSync } from "node:fs"; writeSync(1, process.env.CODEX_HOME + " " + JSON.stringify(process.argv.slice(2)) + "\\n");');
+
+  const other = join(temp, 'unrelated home');
+  const otherScripts = join(other, 'codex-hub', 'scripts');
+  await mkdir(otherScripts, { recursive: true });
+  await writeFile(join(otherScripts, 'activate.sh'), 'printf "INCORRECT HOME\\n"\n');
+  const linked = join(temp, 'linked home');
+  await symlink(home, linked);
+  function runInShell(shell, command, choice) {
+    return spawnSync(shell, ['-c', `unset CODEX_HOME\nCODEX_HOME="$CHOSEN_CODEX_HOME"\n${command}`], {
+      env: { ...process.env, CHOSEN_CODEX_HOME: choice }, encoding: 'utf8',
+    });
+  }
+
+  for (const shell of ['/bin/bash', '/bin/zsh']) {
+    try { await lstat(shell); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    const mismatched = runInShell(shell, activate, other);
+    assert.equal(mismatched.status, 1, mismatched.stderr);
+    assert.equal(mismatched.stdout, '');
+    const same = runInShell(shell, activate, linked);
+    assert.equal(same.status, 0, same.stderr);
+    assert.equal(same.stdout, 'INSTALLED HOME\n');
+
+    const launched = runInShell(shell, explicit, other);
+    assert.equal(launched.status, 0, launched.stderr);
+    assert.equal(launched.stdout.trim(), `${await realpath(home)} ["launch","--"]`);
+  }
 });
 
 test('preserves a nested user file after upgrade and interrupted removal of bundled dependencies', {

@@ -2,7 +2,7 @@
 
 English · [简体中文](README_zh.md)
 
-Codex Hub adds a multi-line HUD directly below the Codex CLI input box. After installing, open a new interactive Bash, Zsh, or PowerShell session and run your usual command.
+Codex Hub adds a multi-line HUD directly below the Codex CLI input box. Follow the installation steps for your shell, then run your usual command.
 
 ```sh
 codex
@@ -21,14 +21,20 @@ Put Node.js 22 or later and Codex CLI on `PATH`. On Linux, macOS, and WSL, the i
 ### Bash or Zsh (Linux, macOS, WSL)
 
 ```bash
-(installer=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh) && [ -n "$installer" ] && bash -c "$installer")
+(installer=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh) && [ -n "$installer" ] &&
+  command env "CODEX_HOME=${CODEX_HOME-}" "CODEX_HUB_SHELL=${CODEX_HUB_SHELL:-${ZSH_VERSION:+zsh}${BASH_VERSION:+bash}}" "ZDOTDIR=${ZDOTDIR-}" bash -c "$installer") &&
+  case $- in *i*) . "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/activate.sh" ;; esac
 ```
+
+This command loads Codex Hub in the current interactive shell, so you can run `codex` in the same terminal. See [diagnostics](#diagnostics-and-explicit-launcher) if an existing shell still shows the single-line footer.
 
 ### Windows PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.ps1 | iex
 ```
+
+Open a new interactive PowerShell window after installation and run `codex`.
 
 ### Windows CMD
 
@@ -44,15 +50,17 @@ if defined CODEX_HOME set "CODEX_HUB_CLI=%CODEX_HOME%\codex-hub\bin\codex-hub.mj
 node "%CODEX_HUB_CLI%" launch --
 ```
 
-The installer downloads `codex-hub.zip` from the latest published GitHub release and installs the runtime under `$CODEX_HOME/codex-hub`, which defaults to `~/.codex/codex-hub`. If you set `CODEX_HOME`, use the same value for installation, launch, and removal.
+The installer downloads `codex-hub.zip` from the latest published GitHub release and installs the runtime under `$CODEX_HOME/codex-hub`, which defaults to `~/.codex/codex-hub`. Export a custom `CODEX_HOME` before running standalone commands such as the uninstaller, using the same value for installation, launch, and removal.
 
 The installer retries temporary connection errors and HTTP failures such as 429 or 503 while downloading the release. If the initial script download fails, run the same command again.
 
-The installer reads `$SHELL` to choose Bash or Zsh on Linux, macOS, and WSL. On Windows it uses the current user's all-hosts PowerShell profile. Existing `codex` aliases and functions retain priority. Run the same installation command again to upgrade. Open a new interactive shell when it finishes. For a new install with manual activation, set `CODEX_HUB_SHELL=none` before running the installer and use the [explicit launcher](#diagnostics-and-explicit-launcher).
+The Bash and Zsh command configures the shell that runs it. On Windows the installer uses the current user's all-hosts PowerShell profile. Existing `codex` aliases and functions retain priority. Run the same installation command again to upgrade. For a first install with manual startup, export `CODEX_HUB_SHELL=none` and use the [explicit launcher](#diagnostics-and-explicit-launcher). If you reinstall with `CODEX_HUB_SHELL=none` after loading Codex Hub, open a new terminal or run `CODEX_HUB_BYPASS=1 codex` in the current Bash or Zsh.
+
+If you upgrade in a terminal that already loaded an earlier Codex Hub launcher and use a custom configuration directory, run `export CODEX_HOME` before starting `codex` there.
 
 ## Use the HUD
 
-Run `codex` for a new session, or `codex resume --last` to resume. The launcher starts the Codex executable on `PATH` and applies display overrides to that invocation only. `codex exec`, `codex app-server`, help, and commands without a terminal use the original CLI behavior. An explicit `--no-alt-screen`, `--remote`, or custom terminal title or status line override also uses the original CLI.
+Run `codex` for a new session. Run `codex resume` to pick a session, or pass its ID to resume it directly. The launcher starts the Codex executable on `PATH` and applies display overrides to that invocation only. `codex exec`, `codex app-server`, help, and commands without a terminal use the original CLI behavior. An explicit `--no-alt-screen`, `--remote`, or custom terminal title or status line override also uses the original CLI.
 
 Codex CLI 0.170.0 uses its embedded app-server for sessions with command-line display overrides. To use your usual shared background server settings for a session, run `CODEX_HUB_BYPASS=1 codex` in Bash or Zsh, or run `& (Get-Command codex -CommandType Application | Select-Object -First 1).Source` in PowerShell.
 
@@ -75,6 +83,20 @@ The layout draws on Claude HUD and agy-hud's alignment and expanded default. [Cl
 The explicit launcher works without shell activation. `doctor` checks the effective status line setting. `status` prints one activity snapshot, `watch` polls every 2.5 seconds, and `preview` shows sample HUD data. Codex's original display remains available when a dialog is open or the terminal is too narrow for an embedded HUD.
 
 ### Bash or Zsh
+
+If you still see a single `model · project · branch ...` line after installing or reopening Codex, run `/exit` in Codex and copy `SESSION_ID` from the resume command that Codex prints. With v0.2.2 or later, run the following in the existing terminal when it matches the configured shell and startup file. Use the session ID you just copied.
+
+```bash
+if [ -n "${CODEX_HOME-}" ]; then export CODEX_HOME; fi
+. "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/activate.sh" && codex resume SESSION_ID
+```
+
+Resume with the explicit launcher if you have an older installation, your shell differs from the configured shell, a custom `codex` alias or function takes precedence, or Codex still shows a single line after activation.
+
+```bash
+command env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" \
+  node "${CODEX_HOME:-$HOME/.codex}/codex-hub/bin/codex-hub.mjs" launch -- resume SESSION_ID
+```
 
 ```bash
 codex_hub_cli="${CODEX_HOME:-$HOME/.codex}/codex-hub/bin/codex-hub.mjs"

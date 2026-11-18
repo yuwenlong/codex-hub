@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { shellInit } from '../lib/shell.mjs';
 
 const exec = promisify(execFile);
+const require = createRequire(import.meta.url);
 const rawBase = 'https://raw.githubusercontent.com/yuwenlong/codex-hub/main';
 const bashOnly = { skip: process.platform === 'win32' };
 const marker = '.codex-hub-managed';
@@ -31,7 +34,15 @@ function managedRuntime(home) {
   return runtime;
 }
 
-async function fixture(t) {
+function readmeCommand(entry, readme = 'README.md') {
+  const docs = readFileSync(new URL(`../${readme}`, import.meta.url), 'utf8');
+  const command = [...docs.matchAll(/^```bash\r?\n([\s\S]*?)\r?\n```$/gmu)]
+    .find(([, body]) => body.includes(`curl -fsSL ${rawBase}/${entry}`))?.[1];
+  assert.ok(command, `Missing Bash command for ${entry} in ${readme}`);
+  return command;
+}
+
+async function fixture(t, { managedShell = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'codex-hub online 中文 '));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const bin = join(root, 'bin');
@@ -39,11 +50,28 @@ async function fixture(t) {
   const home = join(root, '.codex');
   const release = join(root, 'release');
   for (const path of [bin, temp, home, join(release, 'scripts')]) mkdirSync(path, { recursive: true });
-  writeFileSync(join(release, 'scripts', 'manage.mjs'), manager);
+  if (managedShell) {
+    mkdirSync(join(release, 'lib'));
+    copyFileSync(new URL('../lib/shell.mjs', import.meta.url), join(release, 'lib', 'shell.mjs'));
+    copyFileSync(new URL('../scripts/activate.sh', import.meta.url), join(release, 'scripts', 'activate.sh'));
+  }
+  writeFileSync(join(release, 'scripts', 'manage.mjs'), managedShell ? `
+import { copyFileSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { updateShellIntegration } from '../lib/shell.mjs';
+const home = realpathSync(process.env.CODEX_HOME || join(process.env.HOME, '.codex'));
+const runtime = join(home, 'codex-hub');
+for (const part of ['lib', 'bin', 'scripts']) mkdirSync(join(runtime, part), { recursive: true });
+copyFileSync(new URL('../lib/shell.mjs', import.meta.url), join(runtime, 'lib', 'shell.mjs'));
+copyFileSync(new URL('./activate.sh', import.meta.url), join(runtime, 'scripts', 'activate.sh'));
+writeFileSync(join(runtime, 'lib', 'launch.mjs'), '');
+writeFileSync(join(runtime, 'bin', 'codex-hub.mjs'), 'console.log("HUD " + import.meta.url + " " + JSON.stringify(process.argv.slice(2)) + " HOME " + JSON.stringify(process.env.CODEX_HOME));');
+updateShellIntegration(home, 'install');
+` : manager);
   const archive = join(root, 'codex-hub.zip');
   const git = async (...args) => (await exec('git', args, { cwd: release })).stdout.trim();
   await git('init', '-q');
-  await git('add', 'scripts/manage.mjs');
+  await git('add', '.');
   await git('archive', '--format=zip', '--prefix=codex-hub/', '--output', archive, await git('write-tree'));
 
   writeFileSync(join(bin, 'curl'), `#!/usr/bin/env bash
@@ -91,7 +119,7 @@ if "$simulated"; then
 fi
 exec "$FIXTURE_CURL" "\${args[@]}"
 `, { mode: 0o755 });
-  writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  writeFileSync(join(bin, 'codex'), managedShell ? '#!/bin/sh\nprintf "NATIVE %s %s\\n" "$1" "$2"\n' : '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   const log = join(root, 'calls');
   const curlLog = join(root, 'curl-calls');
   const env = {
@@ -109,11 +137,9 @@ exec "$FIXTURE_CURL" "\${args[@]}"
     FIXTURE_UNINSTALL_URL: new URL('../uninstall.sh', import.meta.url).href,
   };
   return {
-    archive, home, root, temp,
+    archive, env, home, root, temp,
     async launch(entry, overrides, readme = 'README.md') {
-      const docs = readFileSync(new URL(`../${readme}`, import.meta.url), 'utf8');
-      const command = docs.split(/\r?\n/u).find(line => line.includes(`curl -fsSL ${rawBase}/${entry}`));
-      assert.ok(command, `Missing Bash command for ${entry} in ${readme}`);
+      const command = readmeCommand(entry, readme);
       try {
         const { stderr } = await exec('bash', ['-c', command], {
           cwd: root, env: { ...env, ...overrides }, timeout: 20_000,
@@ -133,6 +159,165 @@ exec "$FIXTURE_CURL" "\${args[@]}"
     },
   };
 }
+
+async function interactiveShell(shell, cwd, env, command) {
+  const { spawn } = require('node-pty');
+  const args = shell.endsWith('/bash') ? ['--noprofile', '--norc', '-ic'] : ['-fic'];
+  const terminal = spawn(shell, [...args, command], { cwd, env, name: 'xterm-256color' });
+  let output = '';
+  const stream = terminal.onData(bytes => { output += bytes; });
+  const status = await new Promise(resolve => {
+    const timer = setTimeout(() => terminal.kill('SIGKILL'), 10000);
+    terminal.onExit(result => {
+      clearTimeout(timer);
+      stream.dispose();
+      resolve(result.exitCode);
+    });
+  });
+  assert.equal(status, 0, output);
+  return output;
+}
+
+test('Bash and Zsh online install commands activate Codex in the shell that ran them', { ...bashOnly, timeout: 25000 }, async t => {
+  const readmes = [['/bin/bash', 'README.md'], ['/bin/zsh', 'README_zh.md']];
+  const session = '12345678-1234-4321-9234-123456789012';
+  for (const [shell, readme] of readmes) {
+    if (!existsSync(shell)) continue;
+    const { root, env } = await fixture(t, { managedShell: true });
+    const install = readmeCommand('scripts/install.sh', readme);
+    const bash = shell.endsWith('/bash');
+    const zshConfig = join(root, 'zsh config');
+    mkdirSync(zshConfig);
+    const customHome = join(root, 'custom home');
+    mkdirSync(customHome);
+    const linkedHome = join(root, 'linked home');
+    symlinkSync(customHome, linkedHome);
+    const output = await interactiveShell(shell, root, {
+      ...env, SHELL: bash ? '/bin/zsh' : '/bin/bash', CODEX_HUB_SHELL: '', FIXTURE_LINKED_HOME: linkedHome,
+    }, `
+      unset ZDOTDIR
+      ZDOTDIR="$HOME/zsh config"
+      readonly codex_hub_activation='user value'
+      export codex_hub_activation
+      unset CODEX_HOME
+      CODEX_HOME="$FIXTURE_LINKED_HOME"
+      codex before install
+      ${install}
+      codex resume ${session}
+      ${install}
+      codex after reinstall
+      mkdir -p "$HOME/alternate home"
+      cp -R "$CODEX_HOME/codex-hub" "$HOME/alternate home/"
+      CODEX_HOME="$HOME/alternate home"
+      codex switched home
+      if printenv CODEX_HOME >/dev/null; then printf 'EXPORTED\\n'; fi
+      printf 'KEPT %s\\n' "$codex_hub_activation"
+      printf '\\nDONE\\n'
+    `);
+    assert.match(output, /NATIVE before install/u);
+    const launcher = pathToFileURL(join(realpathSync(customHome), 'codex-hub', 'bin', 'codex-hub.mjs')).href;
+    assert.ok(output.includes(`HUD ${launcher} ["launch","--","resume","${session}"] HOME ${JSON.stringify(linkedHome)}`), output);
+    assert.ok(output.includes(`HUD ${launcher} ["launch","--","after","reinstall"] HOME ${JSON.stringify(linkedHome)}`), output);
+    const alternateHome = join(root, 'alternate home');
+    const alternate = pathToFileURL(join(realpathSync(alternateHome), 'codex-hub', 'bin', 'codex-hub.mjs')).href;
+    assert.ok(output.includes(`HUD ${alternate} ["launch","--","switched","home"] HOME ${JSON.stringify(alternateHome)}`), output);
+    assert.doesNotMatch(output, /EXPORTED/u);
+    assert.equal(existsSync(join(root, '.codex', 'codex-hub')), false);
+    assert.match(output, /KEPT user value/u);
+    assert.match(output, /\bDONE\b/u);
+    assert.ok(existsSync(bash ? join(root, '.bashrc') : join(zshConfig, '.zshrc')));
+    assert.equal(existsSync(bash ? join(zshConfig, '.zshrc') : join(root, '.bashrc')), false);
+  }
+});
+
+test('activation reports a legacy installation configured for a different shell', { ...bashOnly, timeout: 10000 }, async t => {
+  const { env, root } = await fixture(t, { managedShell: true });
+  const legacy = `(installer=$(curl -fsSL ${rawBase}/scripts/install.sh) && [ -n "$installer" ] && bash -c "$installer")`;
+  const output = await interactiveShell('/bin/bash', root, { ...env, SHELL: '/bin/zsh', ZDOTDIR: root, CODEX_HUB_SHELL: '' }, `
+    ${legacy}
+    . "$CODEX_HOME/codex-hub/scripts/activate.sh"
+    printf 'ACTIVATION %s\\n' "$?"
+    codex from bash
+  `);
+  assert.match(output, /current README installer.*explicit launcher/u);
+  assert.match(output, /ACTIVATION 1/u);
+  assert.match(output, /NATIVE from bash/u);
+});
+
+test('exporting a custom home also works with a launcher already loaded before upgrade', { ...bashOnly, timeout: 15000 }, async t => {
+  const { env, root } = await fixture(t, { managedShell: true });
+  const home = join(root, 'legacy custom home');
+  mkdirSync(home);
+  const oldProfile = join(root, 'legacy profile');
+  const install = readmeCommand('scripts/install.sh');
+  for (const dialect of ['bash', 'zsh']) {
+    const shell = `/bin/${dialect}`;
+    if (!existsSync(shell)) continue;
+    writeFileSync(oldProfile, shellInit(dialect).replaceAll('command env "CODEX_HOME=${CODEX_HOME:-${HOME-}/.codex}" ', 'command '));
+    const output = await interactiveShell(shell, root, { ...env, SHELL: shell, ZDOTDIR: root, FIXTURE_OLD_PROFILE: oldProfile, FIXTURE_LEGACY_HOME: home }, `
+      unset CODEX_HOME
+      CODEX_HOME="$FIXTURE_LEGACY_HOME"
+      . "$FIXTURE_OLD_PROFILE"
+      ${install}
+      codex before-export
+      export CODEX_HOME
+      codex after-export
+    `);
+    assert.match(output, /\["launch","--","before-export"\] HOME undefined/u);
+    assert.ok(output.includes(`["launch","--","after-export"] HOME ${JSON.stringify(home)}`), output);
+  }
+});
+
+test('online activation preserves custom shell commands and honors skipped integration', { ...bashOnly, timeout: 25000 }, async t => {
+  const shell = '/bin/bash';
+  const run = await fixture(t, { managedShell: true });
+  const env = { ...run.env, SHELL: shell, CODEX_HUB_SHELL: '' };
+  const install = readmeCommand('scripts/install.sh');
+  const custom = await interactiveShell(shell, run.root, env, `
+    codex() { printf 'CUSTOM %s\\n' "$1"; }
+    ${install}
+    codex existing-function
+    unset -f codex
+    alias codex='printf "CUSTOM ALIAS\\n"'
+    ${install}
+    eval 'codex'
+    unalias codex
+    codex still native
+  `);
+  assert.match(custom, /CUSTOM existing-function/u);
+  assert.match(custom, /CUSTOM ALIAS/u);
+  assert.match(custom, /NATIVE still native/u);
+
+  const noIntegration = await interactiveShell(shell, run.root, { ...env, CODEX_HUB_SHELL: 'none' }, `${install}\ncodex opted out`);
+  assert.match(noIntegration, /NATIVE opted out/u);
+  const startup = join(run.root, '.bashrc');
+  writeFileSync(startup, 'export CODEX_HUB_TEST_PROFILE=untouched\n');
+  const edited = await interactiveShell(shell, run.root, env, `
+    ${install}
+    unset -f codex
+    node -e 'const fs = require("fs"); const p = process.argv[1]; fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("launch --", "launch -- edited"))' "$HOME/.bashrc"
+    ${install}
+    codex after conflict
+    printf '%s\\n' "\${CODEX_HUB_TEST_PROFILE-unread}"
+  `);
+  assert.match(edited, /NATIVE after conflict/u);
+  assert.match(edited, /\bunread\b/u);
+  assert.match(readFileSync(startup, 'utf8'), /launch -- edited/u);
+  const failed = await interactiveShell(shell, run.root, { ...env, FIXTURE_INSTALL_URL: 'fixture:partial' },
+    `${install}\ncodex after failure`);
+  assert.match(failed, /NATIVE after failure/u);
+  assert.equal(existsSync(join(run.home, 'partial-ran')), false);
+
+  const activate = join(run.home, 'codex-hub', 'scripts', 'activate.sh');
+  writeFileSync(join(run.home, 'codex-hub', 'lib', 'shell.mjs'), `
+    process.stdout.write('codex() { printf "PARTIAL\\\\n"; }\\n');
+    process.exitCode = 9;
+  `);
+  const partialActivation = await interactiveShell(shell, run.root, { ...env, FIXTURE_ACTIVATE: activate },
+    '. "$FIXTURE_ACTIVATE"\ncode=$?\nprintf "ACTIVATE %s\\n" "$code"\ncodex after partial');
+  assert.match(partialActivation, /ACTIVATE 1/u);
+  assert.match(partialActivation, /NATIVE after partial/u);
+});
 
 test('Bash README commands reject missing, empty, and truncated entry scripts', bashOnly, async t => {
   const run = await fixture(t);
