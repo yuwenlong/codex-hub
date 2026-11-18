@@ -1,0 +1,14 @@
+{
+  "name": "codex-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native status line and session activity view for Codex CLI",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:integration": "node --test tests/integration.mjs"
+  }
+}
