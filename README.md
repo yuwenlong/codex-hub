@@ -1,11 +1,71 @@
 # Codex Hub
 
-Codex Hub 为 Codex CLI 配置原生状态栏，并提供一个终端视图查看会话活动。项目参考 Claude HUD 和 agy-hud 的终端用法，适用于使用 `codex` 命令的工作流。
+English · [简体中文](README_zh.md)
 
-- **Codex 原生状态栏**随主窗口更新，显示模型及推理档位、项目、Git 分支、上下文使用率、5 小时及每周剩余额度和任务进度。字段随会话和账号可用数据出现。
-- **活动视图**在另一个终端查看最近回合的工具、子代理状态和计划记录。`watch` 每 2.5 秒查询 Codex 已保存的会话活动，显示时延取决于 Codex 写入记录的时间。
+Codex Hub configures the native Codex CLI status line and adds a terminal view for session activity.
 
-运行 `preview` 可以离线预览活动视图。
+- **Status line** shows the model and reasoning effort, project, Git branch, context usage, remaining five-hour and weekly limits, and task progress when those fields are available.
+- **Activity view** shows tools, subagent status, and saved plans from the latest turn in a second terminal. `watch` polls saved activity every 2.5 seconds. Updates appear after Codex writes them.
+
+## Install online
+
+Put `node` (Node.js 22 or later) and `codex` (Codex CLI) on your `PATH`. Use Bash with `curl` and `unzip` on Linux, macOS, or WSL, or Windows PowerShell 5.1 or later on Windows.
+
+### Bash (Linux, macOS, WSL)
+
+```bash
+(installer=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh) && [ -n "$installer" ] && bash -c "$installer")
+```
+
+### Windows PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.ps1 | iex
+```
+
+### Windows CMD
+
+```cmd
+powershell -NoProfile -Command "irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.ps1 | iex"
+```
+
+The installer downloads `codex-hub.zip` from the latest published GitHub release, extracts it in a temporary directory, and installs the runtime in `$CODEX_HOME/codex-hub`, which defaults to `~/.codex/codex-hub`. It saves the previous `tui.status_line` value in your Codex configuration directory and updates the setting through the local Codex app-server. Reopen `codex` to see the status line. Run the same install command again to upgrade.
+
+If you already use a custom Codex configuration directory, keep the same `CODEX_HOME` when installing, using, and uninstalling Codex Hub.
+
+## Use Codex Hub
+
+Run `doctor` to check the effective status line setting and `status` for a snapshot. Run `watch` from the project directory for a live view, use `--cwd` to select a project, or use `--thread` to select a session ID. With neither option, Codex Hub uses `CODEX_THREAD_ID` if it is set or looks up the most recent main session for the current working directory.
+
+### Bash
+
+```bash
+codex_hub_cli="${CODEX_HOME:-$HOME/.codex}/codex-hub/bin/codex-hub.mjs"
+node "$codex_hub_cli" doctor
+node "$codex_hub_cli" status
+node "$codex_hub_cli" watch
+node "$codex_hub_cli" watch --cwd "/path/to/my project"
+node "$codex_hub_cli" watch --thread "SESSION_ID"
+node "$codex_hub_cli" preview
+```
+
+### Windows PowerShell
+
+```powershell
+$codexHome = $env:CODEX_HOME
+if (-not $codexHome) { $codexHome = Join-Path $HOME '.codex' }
+$codexHubCli = Join-Path $codexHome 'codex-hub\bin\codex-hub.mjs'
+node "$codexHubCli" doctor
+node "$codexHubCli" status
+node "$codexHubCli" watch
+node "$codexHubCli" watch --cwd 'C:\Projects\My Project'
+node "$codexHubCli" watch --thread 'SESSION_ID'
+node "$codexHubCli" preview
+```
+
+Press `Ctrl+C` to exit `watch`. Redirecting its output to a file writes a single snapshot. The activity view reads session records through the local app-server and displays metadata such as tool types and statuses.
+
+`preview` shows the activity view offline. The terminal view uses Chinese labels.
 
 ```text
 Codex Hub 示例 codex-hub | gpt-6.2 (high) | git:main
@@ -15,13 +75,37 @@ Codex Hub 示例 codex-hub | gpt-6.2 (high) | git:main
 计划 最近回合有已保存计划
 ```
 
-## 安装
+## Uninstall online
 
-需要 Node.js 22 或更新版本，并将 `node` 和 `codex` 放在 `PATH` 中。首版以 Codex CLI 0.170.0 为验证基准。下载 [codex-hub.zip](https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip) 后，在包含 ZIP 的目录执行下列命令。
+The uninstaller restores the saved status line setting first, then removes the managed installation. If you edited the status line after installing, it keeps your latest setting. You can keep any manually extracted copies. Reopen `codex` to see the result.
 
-### Linux、macOS 和 WSL
+### Bash (Linux, macOS, WSL)
 
-```sh
+```bash
+(uninstaller=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.sh) && [ -n "$uninstaller" ] && bash -c "$uninstaller")
+```
+
+### Windows PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.ps1 | iex
+```
+
+### Windows CMD
+
+```cmd
+powershell -NoProfile -Command "irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.ps1 | iex"
+```
+
+If an install or uninstall was forcibly stopped and a retry reports a lock, confirm all Codex Hub install and uninstall processes have exited, remove the empty lock directory at the path shown in the error, and rerun the same command to recover while keeping any manually extracted files.
+
+## Install manually from ZIP
+
+Download the release ZIP, then run the commands below from the directory containing it. [Download codex-hub.zip](https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip)
+
+### Bash (Linux, macOS, WSL)
+
+```bash
 unzip codex-hub.zip
 codex_hub_cli="$PWD/codex-hub/bin/codex-hub.mjs"
 node "$codex_hub_cli" install
@@ -33,42 +117,18 @@ node "$codex_hub_cli" install
 $codexHubRoot = Join-Path $env:LOCALAPPDATA 'Codex Hub'
 Expand-Archive -LiteralPath .\codex-hub.zip -DestinationPath $codexHubRoot
 $codexHubCli = Join-Path $codexHubRoot 'codex-hub\bin\codex-hub.mjs'
-node $codexHubCli install
+node "$codexHubCli" install
 ```
 
-安装后重新打开 `codex`。安装器通过本地 Codex app-server 更新用户配置中的 `tui.status_line`，并在 Codex 配置目录中保存该字段的原值。若已设置 `CODEX_HOME`，就使用该目录。可用 `doctor` 查看当前生效的字段配置，用 `uninstall` 还原安装前的设置。若安装后手动修改过状态栏，卸载后继续使用您后来设置的值。
+Reopen `codex` after installation. Reuse the script path set here for `doctor`, `watch`, and the other commands. To restore the status line for a manual installation, run `node "$codex_hub_cli" uninstall` in Bash or `node "$codexHubCli" uninstall` in PowerShell, then reopen `codex`.
 
-## 查看会话活动
+## Tests
 
-在需要查看的项目目录运行 `status` 或 `watch`。也可以用 `--cwd` 指定工作目录，或用 `--thread` 指定会话 ID。当未指定参数且环境中有 `CODEX_THREAD_ID` 时，使用该会话。其余情况下按当前工作目录查找最近的主会话。请将示例中的脚本路径指向实际解压位置。
-
-```sh
-node "$codex_hub_cli" preview
-node "$codex_hub_cli" status
-node "$codex_hub_cli" watch --cwd "/path/to/my project"
-node "$codex_hub_cli" watch --thread "会话 ID"
-node "$codex_hub_cli" doctor
-node "$codex_hub_cli" uninstall
-```
-
-PowerShell 示例使用带空格的工作路径。
-
-```powershell
-node $codexHubCli preview
-node $codexHubCli doctor
-node $codexHubCli watch --cwd 'C:\Projects\My Project'
-node $codexHubCli uninstall
-```
-
-按 `Ctrl+C` 退出 `watch`。将输出重定向到文件时，`watch` 只写一份快照。活动视图通过本地 app-server 读取会话记录，输出工具类型、状态等元数据。
-
-## 测试
-
-```sh
+```bash
 npm test
 npm run test:integration
 ```
 
-集成测试需要可从 `PATH` 调用的 Codex CLI。测试使用含空格及中文的临时配置和工作目录。仓库的 [Tests 工作流](https://github.com/yuwenlong/codex-hub/actions/workflows/test.yml) 可手动运行 Linux、macOS 和 Windows 检查。
+The integration tests use Codex CLI 0.170.0 as the test baseline and require `codex` on `PATH`. They use temporary configuration and working directories with spaces and Chinese characters. The manually triggered workflow runs checks on Linux, macOS, and Windows. [Tests workflow](https://github.com/yuwenlong/codex-hub/actions/workflows/test.yml)
 
-参考 [Codex CLI 文档](https://learn.chatgpt.com/docs/codex/cli)、[Claude HUD](https://github.com/jarrodwatts/claude-hud) 和 [agy-hud](https://github.com/yuwenlong/agy-hud)。本项目使用 [MIT 许可证](LICENSE)。
+The terminal workflow draws on Claude HUD and agy-hud. [Codex CLI docs](https://learn.chatgpt.com/docs/codex/cli) · [Claude HUD](https://github.com/jarrodwatts/claude-hud) · [agy-hud](https://github.com/yuwenlong/agy-hud) · [MIT License](LICENSE)
