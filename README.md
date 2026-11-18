@@ -2,51 +2,23 @@
 
 English · [简体中文](README_zh.md)
 
-Codex Hub configures the built-in Codex CLI status line and provides a multi-line session HUD in the style of Claude HUD.
+Codex Hub adds a multi-line HUD directly below the Codex CLI input box. After installing, open a new interactive Bash, Zsh, or PowerShell session and run your usual command.
 
-## What you see
-
-### Status line inside Codex
-
-Reopen `codex` after installation to see its built-in status line below the input box. Codex draws it as one line with `·` separators. The preset includes the model and reasoning effort, project, Git branch, Codex version, context used, remaining five-hour and weekly limits, input and output token counts, and task progress. Codex shows an estimated thread cost for eligible Enterprise workspaces and skips fields without data. This example shows a fresh session in Codex CLI 0.170.0.
-
-```text
-gpt-6.2 default · codex-hub · 0.170.0 · Context 0% used · 0 in · 0 out
+```sh
+codex
 ```
 
-### Multi-line HUD
+![The Codex input box with the idle HUD directly below it](docs/hud-idle.png)
 
-After installing, run `watch` from the same project directory in a second terminal. To keep both views in one tab, use tmux in WSL or Windows Terminal to split the tab into top and bottom panes. Run `codex` in the top pane and `watch` from the same project directory in the bottom pane. [Windows PowerShell commands](#use-codex-hub)
+*Captured from Codex CLI 0.170.0 in an isolated WSL session.*
 
-```bash
-node "${CODEX_HOME:-$HOME/.codex}/codex-hub/bin/codex-hub.mjs" watch
-```
-
-The HUD shows progress bars, environment counts, recent tools, MCP calls, subagents, and plans as data becomes available. The Skills row lists the skill selections explicitly recorded by Codex. To see this built-in example offline, run `node ./bin/codex-hub.mjs preview` from the project checkout or extracted ZIP.
-
-```text
-[GPT-6.2-Astra ● max] │ codex-hub git:(main) │ Codex v0.170.0 │ ⏱ 1h 56m │ 费用 $34.95 │ 示例
-上下文 ███░░░░░░░ 32% │ 5h 剩余 53% (54m) │ 7d 剩余 39% (6d 14h)
-内存   █████░░░░░ 10.3 GB / 22.5 GB (46%)
-2 AGENTS.md │ 6 MCPs │ 1 钩子
-最近回合 进行中
-✓ Shell ×20
-▸ Skills (2) 已选 superpowers:systematic-debugging, ponytail:ponytail
-MCPs (2) ✓ codegraph/search ×2 │ ✓ chrome-devtools/list_pages
-◐ reviewer │ gpt-6.2 ● medium │ 进行中
-▸ 计划 最近回合有已保存计划
-词元 9.9M (输入 678k, 输出 31k, 缓存 9.2M)
-```
-
-The HUD uses Chinese labels. Context shows the percentage used. Quota shows the percentage remaining and the time until reset when available. Memory is system usage visible from the current environment, such as WSL. The token row shows the session total from Codex and separates uncached input, output, and cached input when available. The live HUD shows estimated cost when Codex reports it for an Enterprise workspace.
-
-The layout draws on Claude HUD and agy-hud's work to match its layout and show more by default. [Claude HUD](https://github.com/jarrodwatts/claude-hud) · [agy-hud Claude HUD alignment](https://github.com/yuwenlong/agy-hud/commit/3a585b5376f42685d8a21f83342ceb34f0f76d10) · [agy-hud expanded default](https://github.com/yuwenlong/agy-hud/commit/54c25a60950bb0717910492d37af0fa53384b3dc)
+Activity rows appear as Codex records them. The HUD runs in a terminal with Codex CLI. The Codex desktop app and IDE extension have their own displays.
 
 ## Install online
 
-Put `node` (Node.js 22 or later) and `codex` (Codex CLI) on your `PATH`. Use Bash with `curl` and `unzip` on Linux, macOS, or WSL, or Windows PowerShell 5.1 or later on Windows.
+Put Node.js 22 or later and Codex CLI on `PATH`. On Linux, macOS, and WSL, the installer also uses Bash, `curl`, and `unzip`. On Windows, use PowerShell 5.1 or later. The GitHub release bundles the terminal dependencies for x64 and arm64.
 
-### Bash (Linux, macOS, WSL)
+### Bash or Zsh (Linux, macOS, WSL)
 
 ```bash
 (installer=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh) && [ -n "$installer" ] && bash -c "$installer")
@@ -64,47 +36,68 @@ irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.p
 powershell -NoProfile -Command "irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.ps1 | iex"
 ```
 
-The installer downloads `codex-hub.zip` from the latest published GitHub release, extracts it in a temporary directory, and installs the runtime in `$CODEX_HOME/codex-hub`, which defaults to `~/.codex/codex-hub`. It saves the previous `tui.status_line` value in your Codex configuration directory and updates the setting through the local Codex app-server. Run the same install command again to upgrade, then reopen `codex`. If your footer and backup still match the v0.1.0 or v0.1.1 preset, the upgrade applies the new preset and keeps your original footer for uninstall. It preserves your custom footer and any legacy settings without a matching backup.
+CMD can run the installer. Open a new interactive PowerShell session for automatic `codex` activation, or run the explicit launcher from CMD.
 
-If you already use a custom Codex configuration directory, keep the same `CODEX_HOME` when installing, using, and uninstalling Codex Hub.
+```cmd
+set "CODEX_HUB_CLI=%USERPROFILE%\.codex\codex-hub\bin\codex-hub.mjs"
+if defined CODEX_HOME set "CODEX_HUB_CLI=%CODEX_HOME%\codex-hub\bin\codex-hub.mjs"
+node "%CODEX_HUB_CLI%" launch --
+```
 
-## Use Codex Hub
+The installer downloads `codex-hub.zip` from the latest published GitHub release and installs the runtime under `$CODEX_HOME/codex-hub`, which defaults to `~/.codex/codex-hub`. If you set `CODEX_HOME`, use the same value for installation, launch, and removal.
 
-Run `doctor` to check the effective status line setting and `status` for a snapshot. Run `watch` from the project directory for a live view, use `--cwd` to select a project, or use `--thread` to select a session ID. With neither option, Codex Hub uses `CODEX_THREAD_ID` if it is set or looks up the most recent main session for the current working directory.
+The installer reads `$SHELL` to choose Bash or Zsh on Linux, macOS, and WSL. On Windows it uses the current user's all-hosts PowerShell profile. Existing `codex` aliases and functions retain priority. Run the same installation command again to upgrade. Open a new interactive shell when it finishes. For a new install with manual activation, set `CODEX_HUB_SHELL=none` before running the installer and use the [explicit launcher](#diagnostics-and-explicit-launcher).
 
-### Bash
+## Use the HUD
+
+Run `codex` for a new session, or `codex resume --last` to resume. The launcher starts the Codex executable on `PATH` and applies display overrides to that invocation only. `codex exec`, `codex app-server`, help, and commands without a terminal use the original CLI behavior. An explicit `--no-alt-screen`, `--remote`, or custom terminal title or status line override also uses the original CLI.
+
+Codex CLI 0.170.0 uses its embedded app-server for sessions with command-line display overrides. To use your usual shared background server settings for a session, run `CODEX_HUB_BYPASS=1 codex` in Bash or Zsh, or run `& (Get-Command codex -CommandType Application | Select-Object -First 1).Source` in PowerShell.
+
+The compact rows show the current model and reasoning effort, workspace and Git branch, Codex version, context usage, and system memory. Terminals with OSC 8 support can open the local directory from the workspace name. Rate limits show the amount remaining and countdowns when reset times are known. Memory reflects the environment where Codex runs, including WSL. The token row appears when usage is recorded and breaks out uncached input, output, and cached input where available. Codex may report estimated costs for eligible Enterprise sessions.
+
+![The Codex input box with recent activity and subagents in the HUD](docs/hud-active.png)
+
+*Captured from the same Codex CLI using a controlled local session record for the subagent events and 23% context value.*
+
+- The latest turn supplies tool activity and MCP calls. MCP servers are listed once and failures are marked. The Skills row shows selections explicitly recorded by Codex.
+- The HUD puts running subagents first and shows up to three total. It reserves up to two of those slots for agents that finished within the last 60 seconds. Names, models, effort, and elapsed times come from recorded agent events when available.
+- Task progress follows the current `update_plan` counts from the native footer. The environment row counts effective `AGENTS.md` files, enabled MCP servers and hooks, and inline `[agents.<name>]` roles available through the local app-server. A named CLI profile can make environment counts unavailable. Codex Hub omits missing fields and empty activity rows.
+
+The layout draws on Claude HUD and agy-hud's alignment and expanded default. [Claude HUD](https://github.com/jarrodwatts/claude-hud) · [agy-hud alignment](https://github.com/yuwenlong/agy-hud/commit/3a585b5376f42685d8a21f83342ceb34f0f76d10) · [agy-hud expanded default](https://github.com/yuwenlong/agy-hud/commit/54c25a60950bb0717910492d37af0fa53384b3dc)
+
+## Diagnostics and explicit launcher
+
+The explicit launcher works without shell activation. `doctor` checks the effective status line setting. `status` prints one activity snapshot, `watch` polls every 2.5 seconds, and `preview` shows sample HUD data. Codex's original display remains available when a dialog is open or the terminal is too narrow for an embedded HUD.
+
+### Bash or Zsh
 
 ```bash
 codex_hub_cli="${CODEX_HOME:-$HOME/.codex}/codex-hub/bin/codex-hub.mjs"
+node "$codex_hub_cli" launch --
 node "$codex_hub_cli" doctor
 node "$codex_hub_cli" status
-node "$codex_hub_cli" watch
 node "$codex_hub_cli" watch --cwd "/path/to/my project"
-node "$codex_hub_cli" watch --thread "SESSION_ID"
 node "$codex_hub_cli" preview
 ```
 
-### Windows PowerShell
+### PowerShell
 
 ```powershell
-$codexHome = $env:CODEX_HOME
-if (-not $codexHome) { $codexHome = Join-Path $HOME '.codex' }
+$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
 $codexHubCli = Join-Path $codexHome 'codex-hub\bin\codex-hub.mjs'
+node "$codexHubCli" launch --
 node "$codexHubCli" doctor
 node "$codexHubCli" status
-node "$codexHubCli" watch
 node "$codexHubCli" watch --cwd 'C:\Projects\My Project'
-node "$codexHubCli" watch --thread 'SESSION_ID'
 node "$codexHubCli" preview
 ```
 
-Press `Ctrl+C` to exit `watch`. It polls local records every 2.5 seconds. Updates appear after Codex writes them. Redirecting `watch` output to a file writes a single snapshot.
+`status` and `watch` accept `--thread SESSION_ID`. Without `--thread` or `--cwd`, they use `CODEX_THREAD_ID` when set and otherwise look up the most recent main session in the current directory. Press `Ctrl+C` to stop `watch`. Redirecting it to a file writes one snapshot.
 
 ## Uninstall online
 
-The uninstaller restores the saved status line setting first, then removes the managed installation. If you edited the status line after installing, it keeps your latest setting. You can keep any manually extracted copies. Reopen `codex` to see the result.
-
-### Bash (Linux, macOS, WSL)
+### Bash or Zsh (Linux, macOS, WSL)
 
 ```bash
 (uninstaller=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.sh) && [ -n "$uninstaller" ] && bash -c "$uninstaller")
@@ -122,38 +115,38 @@ irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.ps1 | i
 powershell -NoProfile -Command "irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.ps1 | iex"
 ```
 
-If an install or uninstall was forcibly stopped and a retry reports a lock, confirm all Codex Hub install and uninstall processes have exited, remove the empty lock directory at the path shown in the error, and rerun the same command to recover while keeping any manually extracted files.
+The uninstaller removes the managed launcher and installation. It restores a saved status line when Codex Hub still owns the setting and keeps any later edits. Open a new shell when finished. To recover from a force-stopped operation that reports a lock, confirm the installer has exited, remove the empty lock directory named in the error, and rerun the command.
 
 ## Install manually from ZIP
 
-Download the release ZIP, then run the commands below from the directory containing it. [Download codex-hub.zip](https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip)
+Extract `codex-hub.zip` and open the extracted `codex-hub` directory. Use the same `CODEX_HOME` as the online installer. [Download codex-hub.zip](https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip)
 
-### Bash (Linux, macOS, WSL)
+### Bash or Zsh
 
 ```bash
-unzip codex-hub.zip
-codex_hub_cli="$PWD/codex-hub/bin/codex-hub.mjs"
-node "$codex_hub_cli" install
+node ./scripts/manage.mjs install
 ```
 
-### Windows PowerShell
+### PowerShell
 
 ```powershell
-$codexHubRoot = Join-Path $env:LOCALAPPDATA 'Codex Hub'
-Expand-Archive -LiteralPath .\codex-hub.zip -DestinationPath $codexHubRoot
-$codexHubCli = Join-Path $codexHubRoot 'codex-hub\bin\codex-hub.mjs'
-node "$codexHubCli" install
+$env:CODEX_HUB_PS_PROFILE = $PROFILE.CurrentUserAllHosts
+node .\scripts\manage.mjs install
 ```
 
-Reopen `codex` after installation. Reuse the script path set here for `doctor`, `watch`, and the other commands. To restore the status line for a manual installation, run `node "$codex_hub_cli" uninstall` in Bash or `node "$codexHubCli" uninstall` in PowerShell, then reopen `codex`.
+## Develop and test
 
-## Tests
+Install the dependencies in this checkout with `npm ci --ignore-scripts`. Then launch Codex with the current code in one command, from the checkout in an interactive terminal.
 
-```bash
+```sh
+node ./bin/codex-hub.mjs launch --
+```
+
+```sh
 npm test
 npm run test:integration
 ```
 
-The integration tests use Codex CLI 0.170.0 as the test baseline and require `codex` on `PATH`. They use temporary configuration and working directories with spaces and Chinese characters. The manually triggered workflow runs checks on Linux, macOS, and Windows. [Tests workflow](https://github.com/yuwenlong/codex-hub/actions/workflows/test.yml)
+The integration tests use Codex CLI 0.170.0 and temporary configuration and working directories with spaces and Chinese characters. [Tests workflow](https://github.com/yuwenlong/codex-hub/actions/workflows/test.yml)
 
 [Codex CLI docs](https://learn.chatgpt.com/docs/codex/cli) · [MIT License](LICENSE)

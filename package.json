@@ -1,6 +1,6 @@
 {
   "name": "codex-hub",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "description": "Native status line and session activity view for Codex CLI",
   "license": "MIT",
@@ -10,5 +10,9 @@
   "scripts": {
     "test": "node --test",
     "test:integration": "node --test tests/integration.mjs"
+  },
+  "dependencies": {
+    "@xterm/headless": "6.0.0",
+    "node-pty": "1.2.0-beta.18"
   }
 }

@@ -134,6 +134,11 @@ test('counts enabled local configuration before the first turn', async t => {
       if (method === 'config/read' && params.cwd === cwd) return { config: {
         project_root_markers: ['.git'], project_doc_max_bytes: 32768,
         mcp_servers: { one: { enabled: true }, two: { enabled: false } },
+        agents: {
+          enabled: null, max_concurrent_threads_per_session: 6, max_depth: 2,
+          reviewer: { description: 'Reviews changes', config_file: null, nickname_candidates: null },
+          explorer: { description: 'Finds implementation paths', config_file: 'explorer.toml', nickname_candidates: ['Explorer'] },
+        },
       } };
       if (method === 'hooks/list' && params.cwds[0] === cwd) return { data: [{
         cwd, hooks: [{ enabled: true, trustStatus: 'untrusted' }, { enabled: false }], errors: [],
@@ -142,7 +147,7 @@ test('counts enabled local configuration before the first turn', async t => {
     },
   };
   const metrics = await readHudMetrics(client, undefined, { cwd, home });
-  assert.deepEqual(metrics.environment, { agentsMd: 3, mcps: 1, hooks: 1 });
+  assert.deepEqual(metrics.environment, { agentsMd: 3, mcps: 1, hooks: 1, agents: 2 });
 });
 
 test('adds a reported thread cost without making other metrics wait', { timeout: 1500 }, async t => {

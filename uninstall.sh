@@ -6,6 +6,7 @@ runtime="$codex_home/codex-hub"
 manager="$runtime/scripts/manage.mjs"
 marker="$runtime/.codex-hub-managed"
 backup="$codex_home/codex-hub-statusline.json"
+shell_record="$codex_home/.codex-hub-shell.json"
 transaction="$codex_home/.codex-hub-transaction.json"
 pending=false
 manifest=''
@@ -24,6 +25,15 @@ has_local_runtime() {
   for file in bin/codex-hub.mjs package.json lib/app-server.mjs lib/installation.mjs; do
     [[ -f "$runtime/$file" && ! -L "$runtime/$file" ]] || return 1
   done
+  for file in lib/shell.mjs lib/runtime-deps.mjs; do
+    if [[ "$manifest"$'\n' == *$'\n'"$file"$'\n'* ]]; then
+      [[ -f "$runtime/$file" && ! -L "$runtime/$file" ]] || return 1
+    fi
+  done
+  if [[ -e "$shell_record" || -L "$shell_record" ]]; then
+    [[ "$manifest"$'\n' == *$'\nlib/shell.mjs\n'* ]] || return 1
+  fi
+  return 0
 }
 
 if has_local_runtime; then
@@ -44,7 +54,7 @@ if has_local_runtime; then
   fi
 fi
 
-if [[ "$pending" == true || -e "$backup" || "$manifest" == codex-hub-runtime-v1$'\n'* ]]; then
+if [[ "$pending" == true || -e "$backup" || -e "$shell_record" || -L "$shell_record" || "$manifest" == codex-hub-runtime-v1$'\n'* ]]; then
   if ! command -v curl >/dev/null 2>&1; then
     echo 'codex-hub: curl is required on PATH.' >&2
     exit 1

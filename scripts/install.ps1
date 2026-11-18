@@ -32,9 +32,15 @@ param(
         if (-not (Test-Path -LiteralPath $manager -PathType Leaf)) {
             throw 'codex-hub: The release ZIP does not contain the installer.'
         }
-        & $node $manager $CodexHubAction
-        if ($LASTEXITCODE -ne 0) {
-            throw "codex-hub: $CodexHubAction failed (exit code $LASTEXITCODE)."
+        $codexHubPreviousProfile = $env:CODEX_HUB_PS_PROFILE
+        try {
+            $env:CODEX_HUB_PS_PROFILE = $PROFILE.CurrentUserAllHosts
+            & $node $manager $CodexHubAction
+            if ($LASTEXITCODE -ne 0) {
+                throw "codex-hub: $CodexHubAction failed (exit code $LASTEXITCODE)."
+            }
+        } finally {
+            $env:CODEX_HUB_PS_PROFILE = $codexHubPreviousProfile
         }
     } finally {
         Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue

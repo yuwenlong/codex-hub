@@ -2,51 +2,23 @@
 
 [English](README.md) · 简体中文
 
-Codex Hub 为 Codex CLI 配置原生状态栏，并提供 Claude HUD 风格的终端多行面板。
+Codex Hub 在 Codex CLI 的输入框正下方显示多行 HUD。安装后，新开一个交互式 Bash、Zsh 或 PowerShell 窗口，像平时一样运行下面的命令。
 
-## 显示效果
-
-### Codex 输入框下方的状态栏
-
-安装后重新打开 `codex`。输入框下方由 Codex 绘制，固定为使用 `·` 分隔的单行。预设包含模型与推理档位、项目、Git 分支、Codex 版本、上下文用量、5 小时和每周剩余额度、输入与输出词元数、任务进度，以及符合条件的企业工作区会话估算费用。Codex 会省略暂无数据的字段。下面是 Codex CLI 0.170.0 新会话的实际示例。
-
-```text
-gpt-6.2 default · codex-hub · 0.170.0 · Context 0% used · 0 in · 0 out
+```sh
+codex
 ```
 
-### 多行 HUD
+![Codex 输入框正下方的空闲 HUD](docs/hud-idle.png)
 
-安装后，在另一个终端进入同一项目目录运行 `watch`。想在同一个标签页查看，可用 WSL 中的 tmux 或 Windows Terminal 将标签页水平拆成上下两个窗格。上方照常运行 `codex`，下方进入同一项目目录运行 `watch`。[Windows PowerShell 命令](#使用-codex-hub)
+*图为隔离 WSL 会话中实际运行的 Codex CLI 0.170.0。*
 
-```bash
-node "${CODEX_HOME:-$HOME/.codex}/codex-hub/bin/codex-hub.mjs" watch
-```
-
-面板会在有数据时显示进度条、环境计数，以及最近的工具、MCP 调用、子代理和计划。Skills 一行显示 Codex 明确记录的已选技能。可在源码或解压目录运行 `node ./bin/codex-hub.mjs preview`，离线查看下方的内置示例。
-
-```text
-[GPT-6.2-Astra ● max] │ codex-hub git:(main) │ Codex v0.170.0 │ ⏱ 1h 56m │ 费用 $34.95 │ 示例
-上下文 ███░░░░░░░ 32% │ 5h 剩余 53% (54m) │ 7d 剩余 39% (6d 14h)
-内存   █████░░░░░ 10.3 GB / 22.5 GB (46%)
-2 AGENTS.md │ 6 MCPs │ 1 钩子
-最近回合 进行中
-✓ Shell ×20
-▸ Skills (2) 已选 superpowers:systematic-debugging, ponytail:ponytail
-MCPs (2) ✓ codegraph/search ×2 │ ✓ chrome-devtools/list_pages
-◐ reviewer │ gpt-6.2 ● medium │ 进行中
-▸ 计划 最近回合有已保存计划
-词元 9.9M (输入 678k, 输出 31k, 缓存 9.2M)
-```
-
-上下文显示已用比例。额度显示剩余比例，有重置时间时展示倒计时。内存取自当前环境可见的系统用量，例如 WSL。词元总数取自 Codex 的累计记录，在数据齐全时分别显示非缓存输入、输出和缓存输入。企业工作区在 Codex 提供估算费用时会显示该值。
-
-多行布局参考了 Claude HUD，以及 agy-hud 对齐 Claude HUD 并扩充默认显示的改动。[Claude HUD](https://github.com/jarrodwatts/claude-hud) · [agy-hud 对齐提交](https://github.com/yuwenlong/agy-hud/commit/3a585b5376f42685d8a21f83342ceb34f0f76d10) · [agy-hud 完整默认面板提交](https://github.com/yuwenlong/agy-hud/commit/54c25a60950bb0717910492d37af0fa53384b3dc)
+Codex 记录了活动后，相应的行才会出现。HUD 在终端里的 Codex CLI 中运行。Codex 桌面应用和 IDE 扩展使用各自的界面。
 
 ## 在线安装
 
-请将 `node`（Node.js 22 或更新版本）和 `codex`（Codex CLI）放在 `PATH` 中。Linux、macOS 和 WSL 使用 Bash、`curl` 和 `unzip`。Windows 使用 PowerShell 5.1 或更新版本。
+请将 Node.js 22 或更新版本及 Codex CLI 放在 `PATH` 中。Linux、macOS 和 WSL 的安装器还使用 Bash、`curl` 和 `unzip`。Windows 请使用 PowerShell 5.1 或更新版本。GitHub 发行包自带 x64 和 arm64 的终端依赖。
 
-### Bash（Linux、macOS、WSL）
+### Bash 或 Zsh（Linux、macOS、WSL）
 
 ```bash
 (installer=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh) && [ -n "$installer" ] && bash -c "$installer")
@@ -64,47 +36,68 @@ irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.p
 powershell -NoProfile -Command "irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.ps1 | iex"
 ```
 
-安装器会从 GitHub 最新正式发行版下载 `codex-hub.zip`，解压到临时目录，再将运行文件安装到 `$CODEX_HOME/codex-hub`，默认为 `~/.codex/codex-hub`。安装器会在 Codex 配置目录中保存 `tui.status_line` 的原值，并通过本地 Codex app-server 更新该设置。再次运行同一条命令即可升级，随后重新打开 `codex`。如果实际设置和备份都仍匹配 v0.1.0 或 v0.1.1 的预设，升级会应用新预设并保留最初备份，以便卸载时恢复。升级也会保留您自行修改过或没有匹配备份的状态栏。
+CMD 可以运行安装器。新开交互式 PowerShell 后，直接输入 `codex` 即可启动 HUD。继续使用 CMD 时，运行下面的显式启动命令。
 
-如果您已使用自定义 Codex 配置目录，安装、运行和卸载 Codex Hub 时都沿用现有的 `CODEX_HOME`。
+```cmd
+set "CODEX_HUB_CLI=%USERPROFILE%\.codex\codex-hub\bin\codex-hub.mjs"
+if defined CODEX_HOME set "CODEX_HUB_CLI=%CODEX_HOME%\codex-hub\bin\codex-hub.mjs"
+node "%CODEX_HUB_CLI%" launch --
+```
 
-## 使用 Codex Hub
+安装器从 GitHub 最新正式发行版下载 `codex-hub.zip`，并将运行文件放在 `$CODEX_HOME/codex-hub`，默认为 `~/.codex/codex-hub`。已设置 `CODEX_HOME` 时，安装、启动和卸载都使用同一个值。
 
-`doctor` 检查当前生效的状态栏设置，`status` 显示活动快照。在项目目录运行 `watch` 可以持续查看活动，也可以用 `--cwd` 指定项目，或用 `--thread` 指定会话 ID。省略这两个参数时，如果设置了 `CODEX_THREAD_ID` 就使用该会话，否则查找当前工作目录下最近的主会话。
+Linux、macOS 和 WSL 的安装器根据 `$SHELL` 选择 Bash 或 Zsh。Windows 使用当前用户的 PowerShell 全宿主配置文件。已有的 `codex` 别名和函数优先。重新运行同一条安装命令可以升级，完成后请新开交互式 shell。首次安装时若想手动启动，可在运行安装器之前设置 `CODEX_HUB_SHELL=none`，之后使用[显式启动命令](#诊断与显式启动)。
 
-### Bash
+## 使用 HUD
+
+输入 `codex` 新建会话，或用 `codex resume --last` 恢复最近会话。启动器调用 `PATH` 上的 Codex，界面覆盖仅对本次启动生效。`codex exec`、`codex app-server`、帮助和没有终端的调用保持原生行为。显式指定 `--no-alt-screen`、`--remote`，或为本次启动自定义终端标题或状态栏时，也会走原生 CLI。
+
+Codex CLI 0.170.0 对带命令行界面覆盖的会话使用内嵌的 app-server。若本次需要沿用原有的共享后台服务器设置，可在 Bash 或 Zsh 运行 `CODEX_HUB_BYPASS=1 codex`，或在 PowerShell 运行 `& (Get-Command codex -CommandType Application | Select-Object -First 1).Source`。
+
+基础行显示当前模型与推理档位、工作区与 Git 分支、Codex 版本、上下文用量和系统内存。终端支持 OSC 8 时，可点击工作区名称打开本地目录。额度显示剩余比例，有重置时间时附倒计时。内存取自 Codex 所处环境，例如 WSL。记录用量后会出现词元行，有数据时区分非缓存输入、输出和缓存输入。符合条件的企业会话在 Codex 提供估算费用时会显示该值。
+
+![Codex 输入框下显示工具和子代理的 HUD](docs/hud-active.png)
+
+*图为同一 Codex CLI 实际运行画面，子代理事件与 23% 上下文来自受控的本机会话记录。*
+
+- 工具和 MCP 活动取自最近一轮。每个 MCP 服务器只出现一次，有失败会标记。Skills 行显示 Codex 明确记录的已选技能。
+- 子代理优先显示运行中的，最多三项。其中最多两项可以是近 60 秒内结束的代理。名字、模型、推理档位和耗时取自已有的代理事件。
+- 任务行采用原生状态栏中 `update_plan` 的进度计数。环境行统计生效的 `AGENTS.md`、已启用的 MCP 服务器和钩子，以及本地 app-server 返回的内联 `[agents.<name>]` 角色。命名配置档可能使环境计数不可用。没有数据的字段和空活动行会省略。
+
+多行布局参考了 Claude HUD，以及 agy-hud 对齐样式和启用完整面板的改动。[Claude HUD](https://github.com/jarrodwatts/claude-hud) · [agy-hud 对齐提交](https://github.com/yuwenlong/agy-hud/commit/3a585b5376f42685d8a21f83342ceb34f0f76d10) · [agy-hud 完整面板提交](https://github.com/yuwenlong/agy-hud/commit/54c25a60950bb0717910492d37af0fa53384b3dc)
+
+## 诊断与显式启动
+
+未加载 shell 接入配置时，也可以显式启动。用 `doctor` 检查当前生效的状态栏设置，`status` 打印一次活动快照，`watch` 每 2.5 秒刷新一次，`preview` 查看示例数据。对话框打开或终端太窄时，Codex 会回到原生显示。
+
+### Bash 或 Zsh
 
 ```bash
 codex_hub_cli="${CODEX_HOME:-$HOME/.codex}/codex-hub/bin/codex-hub.mjs"
+node "$codex_hub_cli" launch --
 node "$codex_hub_cli" doctor
 node "$codex_hub_cli" status
-node "$codex_hub_cli" watch
 node "$codex_hub_cli" watch --cwd "/path/to/my project"
-node "$codex_hub_cli" watch --thread "SESSION_ID"
 node "$codex_hub_cli" preview
 ```
 
-### Windows PowerShell
+### PowerShell
 
 ```powershell
-$codexHome = $env:CODEX_HOME
-if (-not $codexHome) { $codexHome = Join-Path $HOME '.codex' }
+$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
 $codexHubCli = Join-Path $codexHome 'codex-hub\bin\codex-hub.mjs'
+node "$codexHubCli" launch --
 node "$codexHubCli" doctor
 node "$codexHubCli" status
-node "$codexHubCli" watch
 node "$codexHubCli" watch --cwd 'C:\Projects\My Project'
-node "$codexHubCli" watch --thread 'SESSION_ID'
 node "$codexHubCli" preview
 ```
 
-按 `Ctrl+C` 退出 `watch`。它每 2.5 秒查询一次本地记录，Codex 写入记录后即可看到更新。将输出重定向到文件时，`watch` 只写一份快照。
+`status` 和 `watch` 支持 `--thread SESSION_ID`。两个选项 `--thread` 和 `--cwd` 都省略时，会选择 `CODEX_THREAD_ID` 指定的会话，未设置时查找当前目录最近的主会话。按 `Ctrl+C` 停止 `watch`。重定向到文件时只写一份快照。
 
 ## 在线卸载
 
-卸载器先还原备份的状态栏设置，再移除受管安装。若安装后手动改过状态栏，卸载器会保留您后来设置的值。您可以留存手动解压的文件。重新打开 `codex` 即可看到结果。
-
-### Bash（Linux、macOS、WSL）
+### Bash 或 Zsh（Linux、macOS、WSL）
 
 ```bash
 (uninstaller=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.sh) && [ -n "$uninstaller" ] && bash -c "$uninstaller")
@@ -122,38 +115,38 @@ irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.ps1 | i
 powershell -NoProfile -Command "irm https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.ps1 | iex"
 ```
 
-如果安装或卸载被强制终止，且重试时提示锁仍存在，请确认 Codex Hub 的安装和卸载进程均已退出，删除报错路径所指的空锁目录，再运行原命令恢复操作并保留手动解压的文件。
+卸载器清理受管的启动入口与运行文件。状态栏仍由 Codex Hub 管理时会还原备份，后来手动改过的值会保留。结束后请新开 shell。若安装或卸载被强制终止且重试提示锁仍存在，请确认相关进程已经退出，删除报错路径指向的空锁目录，然后重试原命令。
 
 ## 从 ZIP 手动安装
 
-下载发行 ZIP 后，在包含该文件的目录运行下列命令。[下载 codex-hub.zip](https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip)
+解压 `codex-hub.zip`，进入解压出的 `codex-hub` 目录。`CODEX_HOME` 设置与在线安装相同。[下载 codex-hub.zip](https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip)
 
-### Bash（Linux、macOS、WSL）
+### Bash 或 Zsh
 
 ```bash
-unzip codex-hub.zip
-codex_hub_cli="$PWD/codex-hub/bin/codex-hub.mjs"
-node "$codex_hub_cli" install
+node ./scripts/manage.mjs install
 ```
 
-### Windows PowerShell
+### PowerShell
 
 ```powershell
-$codexHubRoot = Join-Path $env:LOCALAPPDATA 'Codex Hub'
-Expand-Archive -LiteralPath .\codex-hub.zip -DestinationPath $codexHubRoot
-$codexHubCli = Join-Path $codexHubRoot 'codex-hub\bin\codex-hub.mjs'
-node "$codexHubCli" install
+$env:CODEX_HUB_PS_PROFILE = $PROFILE.CurrentUserAllHosts
+node .\scripts\manage.mjs install
 ```
 
-安装后重新打开 `codex`。用这里设置的脚本路径运行 `doctor`、`watch` 等命令。要还原手动安装修改的状态栏，在 Bash 中运行 `node "$codex_hub_cli" uninstall`，或在 PowerShell 中运行 `node "$codexHubCli" uninstall`，然后重新打开 `codex`。
+## 开发和测试
 
-## 测试
+在源码目录用 `npm ci --ignore-scripts` 准备依赖。之后直接在交互终端中从源码目录运行一条命令，就能看到当前代码的 HUD。
 
-```bash
+```sh
+node ./bin/codex-hub.mjs launch --
+```
+
+```sh
 npm test
 npm run test:integration
 ```
 
-集成测试以 Codex CLI 0.170.0 为验证基准，需要可从 `PATH` 调用的 `codex`。测试使用含空格及中文的临时配置和工作目录。手动触发工作流即可运行 Linux、macOS 和 Windows 检查。[Tests 工作流](https://github.com/yuwenlong/codex-hub/actions/workflows/test.yml)
+集成测试以 Codex CLI 0.170.0 为验证基准，使用含空格和中文的临时配置目录与工作目录。[Tests 工作流](https://github.com/yuwenlong/codex-hub/actions/workflows/test.yml)
 
 [Codex CLI 文档](https://learn.chatgpt.com/docs/codex/cli) · [MIT 许可证](LICENSE)

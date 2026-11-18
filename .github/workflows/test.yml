@@ -19,6 +19,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
+      - run: npm ci --ignore-scripts
       - run: npm test
       - run: npm install --global @openai/codex@0.170.0
       - run: npm run test:integration

@@ -15,6 +15,7 @@ node ./bin/codex-hub.mjs <命令>
   preview    离线预览活动视图
   status     查看活动快照
   watch      持续查看活动，按 Ctrl+C 退出
+  launch     启动 Codex，使用 launch -- <Codex 参数>
 
 status 和 watch 接受 --cwd <目录> 或 --thread <会话 ID>。
 全局选项为 --help 和 --version。`;
@@ -67,6 +68,13 @@ async function watch(connect, readFrame) {
 }
 
 async function main() {
+  const args = process.argv.slice(2);
+  if (args[0] === 'launch') {
+    if (args.length > 1 && args[1] !== '--') throw new Error('请用 launch -- <Codex 参数> 启动 Codex。');
+    const { launchCodex } = await import('../lib/launch.mjs');
+    process.exitCode = await launchCodex(args.slice(2));
+    return;
+  }
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {

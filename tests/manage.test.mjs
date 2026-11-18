@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { closeSync, openSync, readFileSync } from 'node:fs';
 import { chmod, cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, rmdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { STATUS_LINE } from '../lib/installation.mjs';
@@ -59,7 +59,7 @@ async function fixture(t) {
   const tools = join(temp, 'test path');
   await mkdir(tools);
   const pathKey = Object.keys(process.env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH';
-  const env = { ...process.env, [pathKey]: tools, CODEX_HOME: 'custom home' };
+  const env = { ...process.env, [pathKey]: tools, CODEX_HOME: 'custom home', CODEX_HUB_SHELL: 'none' };
   if (process.platform === 'win32') {
     const bin = join(tools, 'node_modules', '@openai', 'codex', 'bin');
     await mkdir(bin, { recursive: true });
@@ -96,6 +96,64 @@ async function fixture(t) {
 function assertSuccess(result) {
   assert.equal(result.status, 0, result.output);
 }
+
+const bundledHost = ['linux', 'darwin', 'win32'].includes(process.platform)
+  && ['x64', 'arm64'].includes(process.arch);
+
+test('installs the pinned terminal modules from the local package', { skip: !bundledHost }, async (t) => {
+  const { runtime, manage, run } = await fixture(t);
+  assertSuccess(manage('install'));
+  const result = run('--eval', [
+    'const requireFromHub = require("node:module").createRequire(process.argv[1]);'
+    + 'console.log(typeof requireFromHub("node-pty").spawn, typeof requireFromHub("@xterm/headless").Terminal);',
+    join(runtime, 'lib', 'terminal-host.mjs'),
+  ]);
+  assertSuccess(result);
+  assert.equal(result.output.trim(), 'function function');
+});
+
+test('preserves a nested user file after upgrade and interrupted removal of bundled dependencies', {
+  skip: !bundledHost,
+}, async (t) => {
+  const { temp, home, runtime, backup, manage, run } = await fixture(t);
+  const localFile = join('node_modules', '@xterm', 'headless', 'lib-headless', 'notes.txt');
+  const metadata = join(runtime, 'node_modules', '@xterm', 'headless', 'package.json');
+  assertSuccess(manage('install'));
+  await writeFile(join(runtime, localFile), 'local note');
+  assertSuccess(manage('install'));
+  assert.equal(await readFile(join(runtime, localFile), 'utf8'), 'local note');
+
+  const checkpoint = await interruptRuntimeRename(temp, home, 'uninstall', localFile);
+  assert.equal(run(join(runtime, 'scripts', 'manage.mjs'), ['uninstall'], {}, checkpoint).status, 86);
+  await clearInterruptedLocks(home, backup);
+  assertSuccess(manage('uninstall'));
+  assert.equal(await readFile(join(runtime, localFile), 'utf8'), 'local note');
+  await assert.rejects(lstat(metadata), { code: 'ENOENT' });
+  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hub-runtime-')), false);
+
+  assertSuccess(manage('install'));
+  assert.equal(await readFile(join(runtime, localFile), 'utf8'), 'local note');
+  assert.equal(JSON.parse(await readFile(metadata, 'utf8')).version, '6.0.0');
+});
+
+test('does not follow a substituted terminal dependency directory during uninstall', { skip: !bundledHost }, async (t) => {
+  const { runtime, manage, temp } = await fixture(t);
+  assertSuccess(manage('install'));
+  const owned = join(runtime, 'node_modules', '@xterm', 'headless', 'lib-headless');
+  const original = join(temp, 'original package directory');
+  const other = join(temp, 'unrelated directory');
+  await rename(owned, original);
+  await mkdir(other);
+  const unrelated = join(other, 'xterm-headless.js');
+  await writeFile(unrelated, 'other data');
+  await symlink(other, owned, 'junction');
+
+  const result = manage('uninstall');
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /非 Codex Hub 运行文件/u);
+  assert.equal((await lstat(owned)).isSymbolicLink(), true);
+  assert.equal(await readFile(unrelated, 'utf8'), 'other data');
+});
 
 async function interruptRuntimeRename(temp, home, command, extra) {
   const runtime = join(await realpath(home), 'codex-hub');
@@ -135,6 +193,94 @@ async function legacyInstallation(t) {
   };
 }
 
+async function installBeforeTerminalDependencies(t) {
+  const installed = await fixture(t);
+  const { runtime, config, backup, original } = installed;
+  const files = [
+    'package.json', 'LICENSE', 'bin/codex-hub.mjs', 'scripts/manage.mjs',
+    'lib/activity.mjs', 'lib/app-server.mjs', 'lib/hud-metrics.mjs', 'lib/installation.mjs',
+  ];
+  // The v0.1.2 marker owned only the original files, with no dependency or license directories.
+  for (const directory of ['bin', 'lib', 'scripts']) await mkdir(join(runtime, directory), { recursive: true });
+  for (const file of files) await cp(join(root, file), join(runtime, file));
+  await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'codex-hub', version: '0.1.2' }));
+  await writeFile(join(runtime, '.codex-hub-managed'), ['codex-hub-runtime-v1', ...files, ''].join('\n'));
+  await writeFile(config, JSON.stringify({ tui: { ...original.tui, status_line: STATUS_LINE } }));
+  await writeFile(backup, JSON.stringify({ version: 1, original: original.tui.status_line, applied: STATUS_LINE }));
+  return installed;
+}
+
+test('upgrades a v0.1.2 runtime with user dependency and license directories after an interrupted move', {
+  skip: !bundledHost,
+}, async (t) => {
+  const { temp, home, runtime, config, backup, original, manage, run } = await installBeforeTerminalDependencies(t);
+  const files = new Map([
+    [join('node_modules', 'unrelated', 'notes.txt'), 'user dependency note'],
+    [join('node_modules', '@xterm', 'headless', 'lib-headless', 'local.txt'), 'nested note'],
+    [join('licenses', 'another-project.txt'), 'user license'],
+  ]);
+  for (const [file, content] of files) {
+    const target = join(runtime, file);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content);
+  }
+
+  const checkpoint = await interruptRuntimeRename(temp, home, 'install', join('node_modules', 'unrelated'));
+  const interrupted = run(join(root, 'scripts', 'manage.mjs'), ['install'], {}, checkpoint);
+  assert.equal(interrupted.status, 86, interrupted.output);
+  await clearInterruptedLocks(home, backup);
+  assertSuccess(manage('install'));
+  for (const [file, content] of files) assert.equal(await readFile(join(runtime, file), 'utf8'), content);
+  const nativePackage = join(runtime, 'node_modules', 'node-pty', 'package.json');
+  assert.equal(JSON.parse(await readFile(nativePackage, 'utf8')).version, '1.2.0-beta.18');
+  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hub-runtime-')), false);
+
+  assertSuccess(manage('uninstall', { source: runtime }));
+  await assert.rejects(lstat(nativePackage), { code: 'ENOENT' });
+  for (const [file, content] of files) assert.equal(await readFile(join(runtime, file), 'utf8'), content);
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
+  await assert.rejects(lstat(join(home, transactionName)), { code: 'ENOENT' });
+});
+
+for (const [kind, path] of [
+  ['same file', join('licenses', 'xterm-headless.txt')],
+  ['different type', 'node_modules'],
+  ['directory link', join('node_modules', '@xterm')],
+]) {
+  test(`rejects a v0.1.2 upgrade with a ${kind} conflict without altering old files`, {
+    skip: !bundledHost,
+  }, async (t) => {
+    const { temp, home, runtime, config, backup, manage } = await installBeforeTerminalDependencies(t);
+    const target = join(runtime, path);
+    const oldMarker = await readFile(join(runtime, '.codex-hub-managed'), 'utf8');
+    const oldConfig = await readFile(config, 'utf8');
+    const oldBackup = await readFile(backup, 'utf8');
+    await mkdir(dirname(target), { recursive: true });
+    const outside = join(temp, 'outside');
+    if (kind === 'directory link') {
+      await mkdir(outside);
+      await writeFile(join(outside, 'notes.txt'), 'outside data');
+      await symlink(outside, target, 'junction');
+    } else {
+      await writeFile(target, 'user data');
+    }
+
+    const upgraded = manage('install');
+    assert.equal(upgraded.status, 1, upgraded.output);
+    assert.ok(upgraded.output.includes(target), upgraded.output);
+    assert.equal(await readFile(join(runtime, '.codex-hub-managed'), 'utf8'), oldMarker);
+    assert.equal(await readFile(config, 'utf8'), oldConfig);
+    assert.equal(await readFile(backup, 'utf8'), oldBackup);
+    await assert.rejects(lstat(join(home, transactionName)), { code: 'ENOENT' });
+    if (kind === 'directory link') {
+      assert.ok((await lstat(target)).isSymbolicLink());
+      assert.equal(await readFile(join(outside, 'notes.txt'), 'utf8'), 'outside data');
+    } else {
+      assert.equal(await readFile(target, 'utf8'), 'user data');
+    }
+  });
+}
+
 test('installs a relocatable runtime and preserves extra files through upgrade and removal', async (t) => {
   const { temp, runtime, config, backup, original, manage, run } = await fixture(t);
   const cli = join(runtime, 'bin', 'codex-hub.mjs');
@@ -146,7 +292,7 @@ test('installs a relocatable runtime and preserves extra files through upgrade a
 
   const next = join(temp, 'new package');
   await mkdir(next);
-  for (const name of ['bin', 'lib', 'scripts', 'package.json', 'LICENSE']) {
+  for (const name of ['bin', 'lib', 'licenses', 'node_modules', 'scripts', 'package.json', 'LICENSE']) {
     await cp(join(root, name), join(next, name), { recursive: true });
   }
   await writeFile(join(next, 'package.json'), JSON.stringify({ name: 'codex-hub', version: '9.8.7' }));
@@ -174,7 +320,7 @@ test('retries upgrading an owned v0.1.1 footer after the app-server rejects the 
   assert.equal(run(cli, ['--version']).output.trim(), '0.1.1');
 
   assertSuccess(manage('install'));
-  assert.equal(run(cli, ['--version']).output.trim(), '0.1.2');
+  assert.equal(run(cli, ['--version']).output.trim(), '0.2.0');
   assert.ok(JSON.parse(await readFile(config, 'utf8')).tui.status_line.includes('codex-version'));
   assert.deepEqual(JSON.parse(await readFile(backup, 'utf8')).original, original.tui.status_line);
   assertSuccess(manage('uninstall', { source: runtime }));
@@ -249,7 +395,7 @@ test('rejects a package missing the HUD metrics before applying the footer', asy
   const { temp, config, backup, original, manage } = await fixture(t);
   const badPackage = join(temp, 'missing metrics');
   await mkdir(badPackage);
-  for (const path of ['bin', 'lib', 'scripts', 'package.json', 'LICENSE']) {
+  for (const path of ['bin', 'lib', 'licenses', 'node_modules', 'scripts', 'package.json', 'LICENSE']) {
     await cp(join(root, path), join(badPackage, path), { recursive: true });
   }
   await rm(join(badPackage, 'lib', 'hud-metrics.mjs'));

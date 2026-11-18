@@ -7,6 +7,8 @@
     $marker = Join-Path $runtime '.codex-hub-managed'
     $backup = Join-Path $codexHome 'codex-hub-statusline.json'
     $hasBackup = Test-Path -LiteralPath $backup
+    $shellRecord = Join-Path $codexHome '.codex-hub-shell.json'
+    $hasShellRecord = Get-Item -LiteralPath $shellRecord -Force -ErrorAction SilentlyContinue
     $transaction = Join-Path $codexHome '.codex-hub-transaction.json'
     $pending = Get-Item -LiteralPath $transaction -Force -ErrorAction SilentlyContinue
 
@@ -32,6 +34,10 @@
         foreach ($file in 'bin/codex-hub.mjs', 'package.json', 'lib/app-server.mjs', 'lib/installation.mjs') {
             if (-not (Test-ManagedItem (Join-Path $runtime $file) $false)) { return $false }
         }
+        foreach ($file in 'lib/shell.mjs', 'lib/runtime-deps.mjs') {
+            if (($file -cin $manifest) -and -not (Test-ManagedItem (Join-Path $runtime $file) $false)) { return $false }
+        }
+        if ($hasShellRecord -and ('lib/shell.mjs' -cnotin $manifest)) { return $false }
         return $true
     }
 
@@ -59,7 +65,7 @@
         if ($LASTEXITCODE -ne 0) {
             throw "codex-hub: Uninstall failed (exit code $LASTEXITCODE)."
         }
-    } elseif ($pending -or $owned -or $hasBackup) {
+    } elseif ($pending -or $owned -or $hasBackup -or $hasShellRecord) {
         $url = 'https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.ps1'
         $bootstrap = Invoke-RestMethod -UseBasicParsing -Uri $url
         if ([string]::IsNullOrWhiteSpace($bootstrap)) {

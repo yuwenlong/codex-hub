@@ -3,8 +3,10 @@ import {
   realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { bundledDependencyFiles, dependencyLicenses, hostDependencyFiles } from '../lib/runtime-deps.mjs';
+import { updateShellIntegration } from '../lib/shell.mjs';
 
 const source = resolve(fileURLToPath(new URL('../', import.meta.url)));
 const cli = 'bin/codex-hub.mjs';
@@ -14,8 +16,13 @@ const transactionName = '.codex-hub-transaction.json';
 const stagingPrefix = '.codex-hub-runtime-';
 const folders = ['bin', 'lib', 'scripts'];
 const baseFiles = ['package.json', 'LICENSE', cli, 'scripts/manage.mjs'];
-const required = [...baseFiles, 'lib/activity.mjs', 'lib/app-server.mjs', 'lib/hud-metrics.mjs', 'lib/installation.mjs'];
+const required = [
+  ...baseFiles, 'lib/activity.mjs', 'lib/app-server.mjs', 'lib/hud-metrics.mjs', 'lib/installation.mjs',
+  'lib/launch.mjs', 'lib/runtime-deps.mjs', 'lib/shell.mjs', 'lib/terminal-host.mjs', ...hostDependencyFiles(),
+];
 const library = /^lib\/[\w.-]+\.mjs$/u;
+const dependencyFiles = new Set([...bundledDependencyFiles, ...dependencyLicenses]);
+const managedFile = file => baseFiles.includes(file) || library.test(file) || dependencyFiles.has(file);
 const inspect = path => lstatSync(path, { bigint: true, throwIfNoEntry: false });
 const fileKey = name => process.platform === 'win32' ? name.toLowerCase() : name;
 
@@ -24,7 +31,7 @@ function conflict(path) {
 }
 
 function isManagedFileList(files) {
-  return Array.isArray(files) && files.every(file => typeof file === 'string' && (baseFiles.includes(file) || library.test(file)))
+  return Array.isArray(files) && files.every(file => typeof file === 'string' && managedFile(file))
     && new Set(files.map(fileKey)).size === files.length
     && (!files.length || baseFiles.every(file => files.includes(file)));
 }
@@ -58,11 +65,26 @@ function packageFileList() {
   return [...files];
 }
 
+function managedDirectories(files) {
+  const directories = new Set(folders);
+  for (const file of files) {
+    for (let parent = posix.dirname(file); parent !== '.'; parent = posix.dirname(parent)) {
+      directories.add(parent);
+    }
+  }
+  return [...directories].sort();
+}
+
 function copyPackage(next, files) {
-  for (const folder of folders) mkdirSync(join(next, folder));
+  const directories = managedDirectories(files);
+  for (const folder of directories) {
+    const from = join(source, folder);
+    if (!inspect(from)?.isDirectory()) throw new Error(`安装包缺少有效的目录：${folder}`);
+    mkdirSync(join(next, folder));
+  }
   for (const file of files) {
     const path = join(source, file);
-    if ((!required.includes(file) && !library.test(file)) || !inspect(path)?.isFile()) {
+    if (!managedFile(file) || !inspect(path)?.isFile()) {
       throw new Error(`安装包缺少有效的运行文件：${file}`);
     }
     copyFileSync(path, join(next, file), constants.COPYFILE_EXCL);
@@ -70,10 +92,12 @@ function copyPackage(next, files) {
   writeMarker(next, files);
 }
 
-function listExtras(runtime, files, next) {
+function listExtras(runtime, files, next, relatedFiles = []) {
   const managed = new Set(files.map(fileKey));
+  const directories = managedDirectories([...files, ...relatedFiles]);
+  const directoryKeys = new Set(directories.map(fileKey));
   const extras = [];
-  for (const folder of ['', ...folders]) {
+  for (const folder of ['', ...directories]) {
     const path = join(runtime, folder);
     const entry = inspect(path);
     if (!entry) continue;
@@ -81,7 +105,7 @@ function listExtras(runtime, files, next) {
     for (const name of readdirSync(path)) {
       const file = folder ? `${folder}/${name}` : name;
       const key = fileKey(file);
-      if (key === marker || folders.includes(key)) continue;
+      if (key === marker || directoryKeys.has(key)) continue;
       if (managed.has(key)) {
         if (!inspect(join(runtime, file))?.isFile()) throw conflict(join(runtime, file));
       } else {
@@ -175,13 +199,20 @@ function removeEmptyDirectory(path) {
   }
 }
 
-function discardRuntime(directory, files) {
+function discardRuntime(directory, files, relatedFiles = []) {
   if (!inspect(directory)?.isDirectory()) return;
+  const directories = managedDirectories([...files, ...relatedFiles]);
+  const verified = new Set(['.']);
+  for (const folder of directories) {
+    if (verified.has(posix.dirname(folder)) && inspect(join(directory, folder))?.isDirectory()) verified.add(folder);
+  }
   for (const file of [...files, marker]) {
     const path = join(directory, file);
-    if (inspect(dirname(path))?.isDirectory() && inspect(path)?.isFile()) unlinkSync(path);
+    if (verified.has(posix.dirname(file)) && inspect(path)?.isFile()) unlinkSync(path);
   }
-  for (const folder of folders) removeEmptyDirectory(join(directory, folder));
+  for (const folder of directories.reverse()) {
+    if (verified.has(folder)) removeEmptyDirectory(join(directory, folder));
+  }
   removeEmptyDirectory(directory);
 }
 
@@ -224,8 +255,8 @@ function restoreRuntime(runtime, previous, next, original, candidate, files) {
   if (candidate && (candidateFiles?.join('\n') !== files.join('\n'))
       && (candidateFiles || original === previous || candidate === runtime)) throw conflict(candidate);
 
-  if (original) listExtras(original, originalFiles);
-  const extras = candidateFiles && candidate ? listExtras(candidate, candidateFiles, original) : [];
+  if (original) listExtras(original, originalFiles, undefined, files);
+  const extras = candidateFiles && candidate ? listExtras(candidate, candidateFiles, original, originalFiles) : [];
   for (const file of extras) {
     if (!original) throw conflict(join(candidate, file));
     const destination = dirname(join(original, file));
@@ -235,7 +266,7 @@ function restoreRuntime(runtime, previous, next, original, candidate, files) {
   if (candidate === runtime) moveToUnoccupiedPath(runtime, next);
   for (const file of extras) moveToUnoccupiedPath(join(next, file), join(original, file));
   if (original === previous) moveToUnoccupiedPath(previous, runtime);
-  discardRuntime(next, files);
+  discardRuntime(next, files, originalFiles);
 }
 
 async function recoverRuntimeChange(home, record, previous, next, rollback) {
@@ -258,7 +289,7 @@ async function recoverRuntimeChange(home, record, previous, next, rollback) {
   }
   if (committed) {
     if (!published || (current && ownedFiles(runtime)?.join('\n') !== files.join('\n'))) throw conflict(runtime);
-    if (oldLocation) discardRuntime(previous, ownedFiles(previous) ?? []);
+    if (oldLocation) discardRuntime(previous, ownedFiles(previous) ?? [], files);
     return;
   }
 
@@ -318,14 +349,9 @@ async function manage(home, command) {
     await configure(installing ? next : source, home, command, {
       upgrade: installing && Boolean(files?.length),
       publish(backupId) {
-        const extras = files === null ? [] : listExtras(runtime, files, next);
+        const extras = files === null ? [] : listExtras(runtime, files, next, stagedFiles);
         if (!installing && !extras.length) rmdirSync(next);
-        else if (!installing) {
-          for (const folder of new Set(extras.map(dirname))) {
-            if (folder !== '.') mkdirSync(join(next, folder));
-          }
-          writeMarker(next, []);
-        }
+        else if (!installing) writeMarker(next, []);
         const original = directoryId(runtime);
         if (files === null ? original !== null : ownedFiles(runtime)?.join('\n') !== files.join('\n')) {
           throw conflict(runtime);
@@ -335,7 +361,11 @@ async function manage(home, command) {
         writeTransaction(home, switching);
         record = switching;
         if (original) moveToUnoccupiedPath(runtime, previous);
-        for (const file of extras) moveToUnoccupiedPath(join(previous, file), join(next, file));
+        for (const file of extras) {
+          const destination = join(next, file);
+          mkdirSync(dirname(destination), { recursive: true });
+          moveToUnoccupiedPath(join(previous, file), destination);
+        }
         if (candidate) moveToUnoccupiedPath(next, runtime);
       },
     });
@@ -380,6 +410,7 @@ async function main() {
   }
   try {
     await manage(home, command);
+    updateShellIntegration(home, command);
   } finally {
     rmdirSync(lock);
   }
