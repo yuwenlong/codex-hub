@@ -55,16 +55,24 @@ if has_local_runtime; then
 fi
 
 if [[ "$pending" == true || -e "$backup" || -e "$shell_record" || -L "$shell_record" || "$manifest" == codex-hub-runtime-v1$'\n'* ]]; then
-  if ! command -v curl >/dev/null 2>&1; then
-    echo 'codex-hub: curl is required on PATH.' >&2
-    exit 1
-  fi
-  bootstrap=$(curl -fsSL --proto-redir '=https' 'https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh')
-  if [[ ! "$bootstrap" =~ [^[:space:]] ]]; then
+  for tool in curl mktemp rm; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "codex-hub: $tool is required on PATH." >&2
+      exit 1
+    fi
+  done
+  bootstrap=$(mktemp "${TMPDIR:-/tmp}/codex-hub-uninstall.XXXXXXXX")
+  trap 'rm -f -- "$bootstrap"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  curl -fsSL --proto-redir '=https' --retry 3 --retry-connrefused --retry-max-time 30 \
+    --connect-timeout 10 --max-time 60 'https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh' -o "$bootstrap"
+  if [[ ! $(<"$bootstrap") =~ [^[:space:]] ]]; then
     echo 'codex-hub: The downloaded installer is empty.' >&2
     exit 1
   fi
-  exec bash -c "$bootstrap" codex-hub uninstall
+  bash "$bootstrap" uninstall
+  exit
 fi
 
 echo 'codex-hub: No installation to remove.'

@@ -40,7 +40,7 @@ test('reports local context and cumulative token usage without waiting for a mod
   const metrics = await readHudMetrics(null, { id, path }, { cwd, home });
   assert.equal(metrics.contextPercent, 25);
   assert.deepEqual(metrics.tokens, { total: 19000, input: 4000, output: 1000, cached: 14000 });
-  assert.deepEqual(metrics.limits, { fiveHour: { remainingPercent: 65, resetsAt } });
+  assert.deepEqual(metrics.limits, { fiveHour: { remainingPercent: 64.5, usedPercent: 35.5, resetsAt } });
   assert.ok(metrics.memory.total > 0);
   assert.ok(metrics.memory.used >= 0 && metrics.memory.used <= metrics.memory.total);
 });
@@ -189,4 +189,218 @@ test('includes an available thread cost in a one-shot snapshot', async t => {
   await writeFile(path, meta + '\n' + tokenEvent(null, { plan_type: 'enterprise' }) + '\n');
   const snapshot = await readHudMetrics(client, { id, path }, { cwd, home, waitForCost: true });
   assert.equal(snapshot.estimatedCostUsd, 12.34);
+});
+
+test('fetches measured account quota groups once in the background for related official sessions', { timeout: 1500 }, async t => {
+  const { cwd, home, path } = await fixture(t);
+  const now = 1795000000;
+  t.mock.method(Date, 'now', () => now * 1000);
+  const release = Promise.withResolvers();
+  const windows = (usedPercent, windowDurationMins, resetsAt = null) => ({ usedPercent, windowDurationMins, resetsAt });
+  let reads = 0;
+  const client = { async request(method, params, options) {
+    if (method === 'config/read') return { config: { model_provider: 'openai' } };
+    if (method !== 'account/rateLimits/read') throw new Error('Unsupported fixture request');
+    assert.deepEqual(params, {});
+    assert.equal(options.timeoutMs, 1500);
+    reads++;
+    return release.promise;
+  } };
+  const local = tokenEvent(null, { primary: { used_percent: 15, window_minutes: 300, resets_at: now + 100 } });
+  await writeFile(path, `${meta}\n${local}\n`);
+  const thread = { id, path, modelProvider: 'openai' };
+  const options = { cwd, home };
+  const [initial, other] = await Promise.all([readHudMetrics(client, thread, options), readHudMetrics(client, { ...thread, id: 'another' }, options)]);
+  assert.equal(initial.limits.fiveHour.remainingPercent, 85);
+  assert.equal(initial.quotaGroups, undefined);
+  assert.equal(other.quotaGroups, undefined);
+  assert.equal(reads, 1);
+  release.resolve({
+    rateLimitsByLimitId: {
+      alias: { limitId: 'codex', limitName: 'Alias', primary: windows(2, 300), secondary: windows(0.07, 10_080) },
+      codex: { limitId: 'codex', limitName: 'Codex', primary: windows(93, 300, now + 300), secondary: windows(100, 10_080) },
+      spark: { limitId: 'spark', primary: windows(0.001, 300), secondary: windows(50, null) },
+      trial: { limitId: 'trial', limitName: 'Trial', primary: windows(0.07, 120) },
+      expired: { primary: windows(2, 300, now) },
+      invalid: { primary: windows(101, 300), secondary: windows(50, -1) },
+    },
+    rateLimits: { limitId: 'codex', limitName: 'Legacy', primary: windows(90, 300, now + 600) },
+  });
+  const current = await readHudMetrics(client, thread, { ...options, waitForCost: true });
+  assert.deepEqual(current.quotaGroups, [
+    { id: 'codex', name: 'Codex', windows: [
+      { minutes: 300, usedPercent: 93, remainingPercent: 7, resetsAt: now + 300 },
+      { minutes: 10_080, usedPercent: 100, remainingPercent: 0, resetsAt: undefined },
+    ] },
+    { id: 'spark', name: undefined, windows: [{ minutes: 300, usedPercent: 0.001, remainingPercent: 99.99, resetsAt: undefined }] },
+    { id: 'trial', name: 'Trial', windows: [{ minutes: 120, usedPercent: 0.07, remainingPercent: 99.93, resetsAt: undefined }] },
+  ]);
+  const custom = await readHudMetrics(client, { ...thread, modelProvider: 'local' }, options);
+  assert.equal(custom.quotaGroups, undefined);
+  assert.equal(custom.limits.fiveHour.remainingPercent, 85);
+  assert.equal((await readHudMetrics(client, undefined, options)).quotaGroups, undefined);
+  assert.equal(reads, 1);
+});
+
+test('uses official legacy quotas and falls back to local data after a failed refresh', async t => {
+  const { cwd, home, path } = await fixture(t);
+  let now = 1795000000;
+  t.mock.method(Date, 'now', () => now * 1000);
+  let reads = 0;
+  const client = { async request(method) {
+    if (method === 'config/read') return { config: {} };
+    if (method !== 'account/rateLimits/read') throw new Error('Unsupported fixture request');
+    reads++;
+    if (reads > 1) throw new Error('offline');
+    return { rateLimitsByLimitId: {}, rateLimits: {
+      limitId: 'codex', primary: { usedPercent: 1, windowDurationMins: 300, resetsAt: now + 90 },
+    } };
+  } };
+  const local = tokenEvent(null, { primary: { used_percent: 90.01, window_minutes: 300, resets_at: now + 600 } });
+  await writeFile(path, `${meta}\n${local}\n`);
+  const thread = { id, path, modelProvider: 'openai' };
+  const options = { cwd, home, waitForCost: true };
+  const initial = await readHudMetrics(client, thread, options);
+  assert.equal(initial.quotaGroups[0].windows[0].remainingPercent, 99);
+  assert.equal(initial.limits.fiveHour.remainingPercent, 9.99);
+  now += 90;
+  const offline = await readHudMetrics(client, thread, options);
+  assert.equal(offline.quotaGroups, undefined);
+  assert.equal(offline.limits.fiveHour.remainingPercent, 9.99);
+  await readHudMetrics(client, thread, options);
+  assert.equal(reads, 2);
+});
+
+test('a configured custom provider suppresses account quotas on an old OpenAI thread', async t => {
+  const { cwd, home, path } = await fixture(t);
+  let accountReads = 0;
+  const client = { async request(method) {
+    if (method === 'config/read') return { config: { model_provider: 'local_provider' } };
+    if (method === 'account/rateLimits/read') accountReads++;
+    return {};
+  } };
+  await writeFile(path, `${meta}\n${tokenEvent(null, { primary: { used_percent: 23, window_minutes: 300 } })}\n`);
+  const thread = { id, path, modelProvider: 'openai' };
+  const local = await readHudMetrics(client, thread, { cwd, home, waitForCost: true });
+  assert.equal(local.limits.fiveHour.remainingPercent, 77);
+  assert.equal(local.quotaGroups, undefined);
+  assert.equal(accountReads, 0);
+});
+
+test('account quotas wait for a known effective provider and follow a provider switch in either direction', async t => {
+  const { cwd, home, path } = await fixture(t);
+  let now = 1795000000;
+  t.mock.method(Date, 'now', () => now * 1000);
+  let provider;
+  let configReads = 0;
+  let accountReads = 0;
+  const client = { async request(method) {
+    if (method === 'config/read') {
+      configReads++;
+      if (provider === undefined) throw new Error('Codex config/read timed out');
+      return { config: { model_provider: provider, model_providers: { alternate: { name: 'Alternate' } } } };
+    }
+    if (method === 'account/rateLimits/read') {
+      accountReads++;
+      return { rateLimits: { primary: { usedPercent: 3, windowDurationMins: 300 } } };
+    }
+    return { data: [] };
+  } };
+  await writeFile(path, `${meta}\n${tokenEvent(null, { primary: { used_percent: 23, window_minutes: 300 } })}\n`);
+  const thread = { id, path, modelProvider: 'openai' };
+  const read = () => readHudMetrics(client, thread, { cwd, home, waitForCost: true });
+  const unconfirmed = await read();
+  assert.equal(unconfirmed.quotaGroups, undefined);
+  assert.equal(unconfirmed.limits.fiveHour.remainingPercent, 77);
+  assert.equal(accountReads, 0);
+  await read();
+  assert.equal(configReads, 1);
+  provider = null;
+  now += 31;
+  assert.equal((await read()).quotaGroups[0].windows[0].remainingPercent, 97);
+  assert.equal(accountReads, 1);
+  provider = 'alternate';
+  now += 31;
+  assert.equal((await read()).quotaGroups, undefined);
+  assert.equal(accountReads, 1);
+  provider = 'openai';
+  now += 31;
+  assert.equal((await read()).quotaGroups[0].windows[0].remainingPercent, 97);
+  assert.equal(accountReads, 2);
+  assert.equal(configReads, 4);
+});
+
+test('a cached response reselects a live alias or the legacy bucket as windows expire', async t => {
+  const { cwd, home } = await fixture(t);
+  const start = 1795000000;
+  let now = start;
+  t.mock.method(Date, 'now', () => now * 1000);
+  let requests = 0;
+  const bucket = (limitId, usedPercent, offset) => ({ limitId, primary: {
+    usedPercent, windowDurationMins: 300, resetsAt: start + offset,
+  } });
+  const client = { async request(method) {
+    if (method === 'config/read') return { config: { model_provider: 'openai' } };
+    if (method === 'account/rateLimits/read') {
+      requests++;
+      return { rateLimitsByLimitId: {
+        canonical: bucket('canonical', 1, 10), alias: bucket('canonical', 5, 30), other: bucket('other', 10, 25),
+      }, rateLimits: bucket('legacy', 40, 120) };
+    }
+    return {};
+  } };
+  const read = () => readHudMetrics(client, { id, modelProvider: 'openai' }, { cwd, home, waitForCost: true });
+  const values = async () => (await read()).quotaGroups.map(({ id, windows: [window] }) => [id, window.remainingPercent, window.resetsAt - start]);
+  assert.deepEqual(await values(), [['canonical', 99, 10], ['other', 90, 25]]);
+  now = start + 10;
+  assert.deepEqual(await values(), [['canonical', 95, 30], ['other', 90, 25]]);
+  now = start + 25;
+  assert.deepEqual(await values(), [['canonical', 95, 30]]);
+  now = start + 30;
+  assert.deepEqual(await values(), [['legacy', 60, 120]]);
+  assert.equal(requests, 1);
+});
+
+test('the built-in provider needs an official effective endpoint before reading account quotas', async t => {
+  const { cwd, home } = await fixture(t);
+  const saved = process.env.OPENAI_BASE_URL;
+  t.after(() => {
+    if (saved === undefined) delete process.env.OPENAI_BASE_URL;
+    else process.env.OPENAI_BASE_URL = saved;
+  });
+  const official = 'https://api.openai.com/v1';
+  const httpProxy = 'http://127.0.0.1:9/private-model';
+  const thread = { id, modelProvider: 'openai' };
+  const cases = [
+    [{}, undefined, true],
+    [{ openai_base_url: official }, undefined, true],
+    [{ openai_base_url: 'https://api.openai.com:443/v1/' }, undefined, true],
+    [{ openai_base_url: 'https://chatgpt.com/backend-api/codex/' }, undefined, true],
+    [{ chatgpt_base_url: 'https://chatgpt.com/backend-api/' }, undefined, true],
+    [{ openai_base_url: httpProxy }, undefined, false],
+    [{ openai_base_url: 'https://api.openai.com.example.invalid/v1' }, undefined, false],
+    [{ openai_base_url: 'https://api.openai.com@alternate.invalid/v1' }, undefined, false],
+    [{ openai_base_url: 'https://api.openai.com:8443/v1' }, undefined, false],
+    [{ chatgpt_base_url: httpProxy }, undefined, false],
+    [{}, httpProxy, true],
+    [{}, official, true],
+    [{ openai_base_url: official }, httpProxy, true],
+    [{ openai_base_url: httpProxy }, official, false],
+  ];
+  for (const [index, [config, env, enabled]] of cases.entries()) {
+    if (env === undefined) delete process.env.OPENAI_BASE_URL;
+    else process.env.OPENAI_BASE_URL = env;
+    let requests = 0;
+    const client = { async request(method) {
+      if (method === 'config/read') return { config: { model_provider: 'openai', ...config } };
+      if (method === 'account/rateLimits/read') {
+        requests++;
+        return { rateLimits: { primary: { usedPercent: 3, windowDurationMins: 300 } } };
+      }
+      return {};
+    } };
+    const result = await readHudMetrics(client, thread, { cwd, home, waitForCost: true });
+    assert.equal(requests, enabled ? 1 : 0, `endpoint scenario ${index}`);
+    assert.equal(result.quotaGroups?.[0].windows[0].remainingPercent, enabled ? 97 : undefined);
+  }
 });

@@ -193,6 +193,87 @@ test('a short interactive frame retains the header and reports hidden rows', () 
   assert.equal(renderActivity(snapshot, { width: 24, height: 1 }), full[0]);
 });
 
+test('grouped quotas show remaining meters, omit invalid or expired data, and preserve activity on small screens', () => {
+  const now = 1795000000;
+  const snapshot = {
+    id: 'active', workspace: cwd, model: 'gpt-live', contextPercent: 32,
+    memory: { used: 16 * 1024 ** 3, total: 32 * 1024 ** 3 }, environment: { agentsMd: 2 },
+    agents: [{ name: 'reviewer', status: 'running' }],
+    quotaGroups: [
+      { id: 'codex', name: 'Codex', windows: [
+        { minutes: 300, remainingPercent: 100, usedPercent: 0, resetsAt: now + 3600 },
+        { minutes: 10_080, remainingPercent: 0, usedPercent: 100 },
+      ] },
+      { id: 'spark', name: 'Spark', windows: [{ minutes: 120, remainingPercent: 99.99, usedPercent: 0.001 }] },
+      { id: 'expired', name: 'Expired', windows: [{ minutes: 300, remainingPercent: 55, usedPercent: 45, resetsAt: now }] },
+      { id: 'empty', name: 'Empty', windows: [] },
+    ],
+  };
+  const view = options => renderActivity(snapshot, { embedded: true, now, ...options });
+  assert.match(view(), /^Codex 5h █{6} 100% \(1h 0m\) │ Codex 7d ░{6} 0%\nSpark 2h █{6} 99\.99%$/m);
+  assert.doesNotMatch(view(), /Expired|Empty|Google|Claude|Argon/u);
+  assert.match(view({ color: true }), /\u001b\[94m█{6}\u001b\[0m[\s\S]*\u001b\[31;2m░{6}\u001b\[0m/u);
+  assert.equal(view({ height: 5 }), renderActivity({ ...snapshot, quotaGroups: undefined }, { embedded: true, now, height: 5 }));
+  assert.match(view({ width: 18 }), /^Codex 5h .*100%\nCodex 7d .*0%\nSpark 2h .*99\.99%$/m);
+  assert.ok(view({ width: 18 }).split('\n').every(line => [...line].reduce((width, char) => width + (/\p{Script=Han}/u.test(char) ? 2 : 1), 0) <= 18));
+});
+
+test('a single known quota group leaves only compact windows alongside context', () => {
+  const now = 1795000000;
+  const snapshot = {
+    ...previewActivity(), contextPercent: 32, limits: { fiveHour: { remainingPercent: 99 }, weekly: { remainingPercent: 99 } },
+    quotaGroups: [{ id: 'codex', name: 'Regional', windows: [
+      { minutes: 300, remainingPercent: 5.27, usedPercent: 94.73 },
+      { minutes: 10_080, remainingPercent: 100, usedPercent: 0, resetsAt: now + 3600 },
+    ] }],
+  };
+  const output = renderActivity(snapshot, { now });
+  assert.match(output, /^上下文 ███░░░░░░░ 32% │ 5h 剩余 5\.27% │ 7d 剩余 100% \(1h 0m\)$/m);
+  assert.doesNotMatch(output, /Regional|99%/u);
+});
+
+test('repeated quota names show distinct IDs and keep them legible beside both windows', () => {
+  const quotaGroup = (id, name, remainingFiveHour, remainingWeek) => ({ id, name, windows: [
+    { minutes: 300, remainingPercent: remainingFiveHour, usedPercent: 100 - remainingFiveHour },
+    { minutes: 10_080, remainingPercent: remainingWeek, usedPercent: 100 - remainingWeek },
+  ] });
+  const snapshot = { model: 'fixture', quotaGroups: [
+    quotaGroup('common_quota_prefix_alpha', 'Base', 32, 91),
+    quotaGroup('common_quota_prefix_beta', 'Base', 72, 18),
+    quotaGroup('unique-plan', 'Trial', 99, 76),
+  ] };
+  const wide = renderActivity(snapshot, { embedded: true, width: 112 });
+  assert.match(wide, /^Base \(common_quota_prefix_alpha\) 5h .*32% │ Base \(common_quota_prefix_alpha\) 7d .*91%$/m);
+  assert.match(wide, /^Base \(common_quota_prefix_beta\) 5h .*72% │ Base \(common_quota_prefix_beta\) 7d .*18%$/m);
+  assert.match(wide, /^Trial 5h .*99% │ Trial 7d .*76%$/m);
+  assert.doesNotMatch(wide, /unique-plan/u);
+  const narrow = renderActivity(snapshot, { embedded: true, width: 19 });
+  assert.match(narrow, /^alpha 5h .*32%\nalpha 7d .*91%\nbeta 5h .*72%\nbeta 7d .*18%$/m);
+});
+
+test('three repeated quota names remain distinct after clipping at 52 columns', () => {
+  const render = (ids, additional = []) => renderActivity({ model: 'fixture', quotaGroups: [
+    ...ids.map((id, index) => ({ id, name: 'Base', windows: [{ minutes: 300, remainingPercent: (index + 1) * 11 }] })),
+    ...additional,
+  ] }, { embedded: true, width: 52 });
+  const prefix = 'codex-extended-family-organization-long-shared-';
+  const result = render([`${prefix}alpha`, `${prefix}beta`, 'spark']);
+  assert.match(result, /^alpha 5h .*11%\nbeta 5h .*22%\nBase \(spark\) 5h .*33%$/m);
+
+  const head = 'commonprefix'.repeat(6);
+  const tail = 'commonsuffix'.repeat(6);
+  const varied = render([`${head}alpha${tail}`, `${head}bravo${tail}`, 'spark']);
+  assert.match(varied, /^alpha 5h .*11%\nbravo 5h .*22%\nBase \(spark\) 5h .*33%$/m);
+
+  const visibleDuplicate = { id: 'standalone', name: 'alpha', windows: [{ minutes: 300, remainingPercent: 77 }] };
+  const collision = render([`${prefix}alpha`, `${prefix}beta`, 'spark'], [visibleDuplicate]);
+  assert.match(collision, /^#1 5h .*11%$/m);
+  assert.match(collision, /^#4 5h .*77%$/m);
+  const reversed = render(['spark', `${prefix}beta`, `${prefix}alpha`], [visibleDuplicate]);
+  assert.match(reversed, /^#1 5h .*33%$/m);
+  assert.match(reversed, /^#4 5h .*77%$/m);
+});
+
 test('an embedded idle session shows measured rows even before the history is available', () => {
   const snapshot = {
     workspace: cwd, model: 'gpt-6.2', reasoning: 'high', cliVersion: '0.170.0', contextPercent: 0,

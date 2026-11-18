@@ -29,6 +29,13 @@ test('launch distinguishes interactive arguments from native commands and displa
   ]) {
     assert.equal(interactiveOptions(args, cwd), undefined, JSON.stringify(args));
   }
+  for (const args of [['--oss', 'resume'], ['--local-provider=ollama']]) {
+    assert.equal(interactiveOptions(args, cwd).useAccountQuota, false, JSON.stringify(args));
+  }
+  const overrides = ['model_providers.alternate.name="Alternate provider"', 'model_provider="alternate"', 'model_provider="openai"'];
+  assert.deepEqual(interactiveOptions(overrides.flatMap(value => ['-c', value]), cwd), {
+    workspace: cwd, configArgs: overrides.flatMap(value => ['--config', value]),
+  });
 });
 
 async function nativeFixture(t) {
@@ -185,6 +192,49 @@ test('closing the HUD during initialization closes a late connection', async () 
   connection.resolve({ close() { closed++; } });
   await nextTick();
   assert.equal(closed, 1);
+});
+
+test('the interactive footer cannot relabel another account quota or leak it to a custom provider', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub quota source '));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const deferred = Promise.withResolvers();
+  let accountReads = 0;
+  const hud = createLaunchHud({ cwd, home: cwd, color: false, connect: async () => ({
+    close() {},
+    async request(method, params) {
+      if (method === 'thread/read') return { thread: {
+        id: params.threadId, cwd, modelProvider: params.threadId === firstThread ? 'openai' : 'local',
+      } };
+      if (method === 'config/read') return { config: { model_provider: 'openai' } };
+      if (method === 'account/rateLimits/read') {
+        accountReads++;
+        return deferred.promise;
+      }
+      return { data: [] };
+    },
+  }) });
+  t.after(hud.close);
+  const input = {
+    model: 'fixture', contextPercent: 0, columns: 96, rows: 12,
+    limits: { fiveHour: { remainingPercent: 89 }, weekly: { remainingPercent: 90 } },
+  };
+  assert.match(await hud.readHud({ ...input, threadId: firstThread }), /5h 剩余 89%/u);
+  await nextTick();
+  assert.match(await hud.readHud({ ...input, threadId: firstThread }), /7d 剩余 90%/u);
+  assert.equal(accountReads, 1);
+  const resetsAt = Math.floor(Date.now() / 1000) + 1199;
+  deferred.resolve({ rateLimitsByLimitId: {
+    codex: { limitName: 'Codex', primary: { usedPercent: 76, windowDurationMins: 300, resetsAt } },
+    spark: { limitName: 'Spark', primary: { usedPercent: 43, windowDurationMins: 300 } },
+  } });
+  await nextTick();
+  const grouped = await hud.readHud({ ...input, threadId: firstThread });
+  assert.match(grouped, /Codex 5h .*24% \(20m\)\nSpark 5h .*57%/u);
+  assert.doesNotMatch(grouped, /5h 剩余|89%|90%/u);
+  const local = await hud.readHud({ ...input, threadId: secondThread });
+  assert.match(local, /5h 剩余 89% │ 7d 剩余 90%/u);
+  assert.doesNotMatch(local, /Spark|24%|20m|57%/u);
+  assert.equal(accountReads, 1);
 });
 
 test('the HUD prefers the selected Git worktree over the branch saved in the thread', async t => {

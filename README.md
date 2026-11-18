@@ -46,6 +46,8 @@ node "%CODEX_HUB_CLI%" launch --
 
 The installer downloads `codex-hub.zip` from the latest published GitHub release and installs the runtime under `$CODEX_HOME/codex-hub`, which defaults to `~/.codex/codex-hub`. If you set `CODEX_HOME`, use the same value for installation, launch, and removal.
 
+The installer retries temporary connection errors and HTTP failures such as 429 or 503 while downloading the release. If the initial script download fails, run the same command again.
+
 The installer reads `$SHELL` to choose Bash or Zsh on Linux, macOS, and WSL. On Windows it uses the current user's all-hosts PowerShell profile. Existing `codex` aliases and functions retain priority. Run the same installation command again to upgrade. Open a new interactive shell when it finishes. For a new install with manual activation, set `CODEX_HUB_SHELL=none` before running the installer and use the [explicit launcher](#diagnostics-and-explicit-launcher).
 
 ## Use the HUD
@@ -54,7 +56,9 @@ Run `codex` for a new session, or `codex resume --last` to resume. The launcher 
 
 Codex CLI 0.170.0 uses its embedded app-server for sessions with command-line display overrides. To use your usual shared background server settings for a session, run `CODEX_HUB_BYPASS=1 codex` in Bash or Zsh, or run `& (Get-Command codex -CommandType Application | Select-Object -First 1).Source` in PowerShell.
 
-The compact rows show the current model and reasoning effort, workspace and Git branch, Codex version, context usage, and system memory. Terminals with OSC 8 support can open the local directory from the workspace name. Rate limits show the amount remaining and countdowns when reset times are known. Memory reflects the environment where Codex runs, including WSL. The token row appears when usage is recorded and breaks out uncached input, output, and cached input where available. Codex may report estimated costs for eligible Enterprise sessions.
+The compact rows show the current model and reasoning effort, workspace and Git branch, Codex version, context usage, and system memory. Terminals with OSC 8 support can open the local directory from the workspace name. Memory reflects the environment where Codex runs, including WSL. The token row appears when usage is recorded and breaks out uncached input, output, and cached input where available. Codex may report estimated costs for eligible Enterprise sessions.
+
+For sessions using the official OpenAI provider, the HUD displays the quota groups reported by the local Codex app-server. A single group uses the compact quota slots beside context usage. Multiple groups appear below activity with named meters that fill by remaining quota and change color based on usage. Countdown values appear when reset times are available. When account quota data is unavailable, the HUD uses available values from the session or native footer. The screenshot was captured in the WSL CLI using a controlled response in Codex's official quota format. [Grouped quota example](docs/hud-quotas.png)
 
 ![The Codex input box with recent activity and subagents in the HUD](docs/hud-active.png)
 
@@ -117,6 +121,8 @@ powershell -NoProfile -Command "irm https://raw.githubusercontent.com/yuwenlong/
 
 The uninstaller removes the managed launcher and installation. It restores a saved status line when Codex Hub still owns the setting and keeps any later edits. Open a new shell when finished. To recover from a force-stopped operation that reports a lock, confirm the installer has exited, remove the empty lock directory named in the error, and rerun the command.
 
+The uninstaller uses a complete local installation when available. If it needs to download the release to recover an incomplete installation, it retries temporary failures.
+
 ## Install manually from ZIP
 
 Extract `codex-hub.zip` and open the extracted `codex-hub` directory. Use the same `CODEX_HOME` as the online installer. [Download codex-hub.zip](https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip)
@@ -141,6 +147,8 @@ Install the dependencies in this checkout with `npm ci --ignore-scripts`. Then l
 ```sh
 node ./bin/codex-hub.mjs launch --
 ```
+
+This command starts your installed Codex CLI from the checkout and refreshes activity automatically. Rerun it after editing the renderer to see the new code without publishing to npm.
 
 ```sh
 npm test

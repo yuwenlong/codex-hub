@@ -1,5 +1,49 @@
 & {
     $ErrorActionPreference = 'Stop'
+
+    function Save-CodexHubDownload($url, $destination) {
+        for ($attempt = 0; ; $attempt++) {
+            try {
+                Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $destination -TimeoutSec 60
+                return
+            } catch {
+                if ($attempt -eq 3) { throw }
+                $failure = $_.Exception
+                $response = if ($failure.PSObject.Properties['Response']) { $failure.Response }
+                $delay = [int][Math]::Pow(2, $attempt)
+                if ($response) {
+                    if ([int]$response.StatusCode -notin 408, 429, 500, 502, 503, 504, 522, 524) { throw }
+                    $retryAfter = if ($response -is [System.Net.HttpWebResponse]) {
+                        $response.Headers['Retry-After']
+                    } else {
+                        [string]$response.Headers.RetryAfter
+                    }
+                    [long]$seconds = 0
+                    $date = [DateTimeOffset]::MinValue
+                    if ([long]::TryParse($retryAfter, [ref]$seconds) -and $seconds -ge 0) {
+                        $delay = $seconds
+                    } elseif ($retryAfter -match '^[0-9]+$') {
+                        throw
+                    } elseif ([DateTimeOffset]::TryParse($retryAfter, [Globalization.CultureInfo]::InvariantCulture,
+                            [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$date)) {
+                        $delay = [Math]::Max(0, [Math]::Ceiling(($date - [DateTimeOffset]::UtcNow).TotalSeconds))
+                    }
+                    if ($delay -gt 30) { throw }
+                } elseif ($failure -is [System.Net.WebException]) {
+                    if ([string]$failure.Status -notin 'ConnectFailure', 'ConnectionClosed', 'KeepAliveFailure',
+                        'NameResolutionFailure', 'ProxyNameResolutionFailure', 'ReceiveFailure', 'SendFailure', 'Timeout') { throw }
+                } else {
+                    $cause = $failure.GetBaseException()
+                    $networkError = $cause.PSObject.Properties['HttpRequestError'] -and
+                        [string]$cause.HttpRequestError -in 'NameResolutionError', 'ConnectionError', 'ResponseEnded'
+                    if (-not $networkError -and $cause -isnot [System.TimeoutException] -and
+                        $cause -isnot [System.Net.Sockets.SocketException]) { throw }
+                }
+                Start-Sleep -Seconds $delay
+            }
+        }
+    }
+
     $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
     $runtime = Join-Path $codexHome 'codex-hub'
     $scripts = Join-Path $runtime 'scripts'
@@ -67,11 +111,17 @@
         }
     } elseif ($pending -or $owned -or $hasBackup -or $hasShellRecord) {
         $url = 'https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.ps1'
-        $bootstrap = Invoke-RestMethod -UseBasicParsing -Uri $url
-        if ([string]::IsNullOrWhiteSpace($bootstrap)) {
-            throw 'codex-hub: The downloaded installer is empty.'
+        $bootstrapFile = [IO.Path]::GetTempFileName()
+        try {
+            Save-CodexHubDownload $url $bootstrapFile
+            $bootstrap = Get-Content -LiteralPath $bootstrapFile -Encoding UTF8 -Raw
+            if ([string]::IsNullOrWhiteSpace($bootstrap)) {
+                throw 'codex-hub: The downloaded installer is empty.'
+            }
+            & ([scriptblock]::Create($bootstrap)) 'uninstall'
+        } finally {
+            Remove-Item -LiteralPath $bootstrapFile -Force -ErrorAction SilentlyContinue
         }
-        & ([scriptblock]::Create($bootstrap)) 'uninstall'
     } else {
         Write-Output 'codex-hub: No installation to remove.'
     }

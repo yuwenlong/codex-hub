@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import test from 'node:test';
@@ -47,22 +48,52 @@ async function fixture(t) {
 
   writeFileSync(join(bin, 'curl'), `#!/usr/bin/env bash
 args=()
+if [[ -n "$FIXTURE_CURL_CALLS" ]]; then
+  printf '%s\\0' "$@" '' >> "$FIXTURE_CURL_CALLS"
+fi
+partial=false
+simulated=false
+output=''
+previous=''
+retries=0
 for arg; do
+  if [[ "$previous" == -o ]]; then output="$arg"; fi
+  if [[ "$previous" == --retry ]]; then retries="$arg"; fi
   case "$arg" in
     ${rawBase}/scripts/install.sh) arg="$FIXTURE_INSTALL_URL" ;;
     ${rawBase}/uninstall.sh) arg="$FIXTURE_UNINSTALL_URL" ;;
     https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip) arg="$FIXTURE_ARCHIVE_URL" ;;
   esac
-  if [[ "$arg" == fixture:partial ]]; then
-    printf '%s\\n' 'printf ran > "$CODEX_HOME/partial-ran"'
-    exit 18
+  if [[ "$arg" == fixture:partial ]]; then partial=true; fi
+  if [[ "$arg" == fixture:http ]]; then
+    simulated=true
+    arg="$FIXTURE_RESPONSE_URL"
   fi
   args+=("$arg")
+  previous="$arg"
 done
+if "$partial"; then
+  prefix='printf ran > "$CODEX_HOME/partial-ran"'
+  if [[ -n "$output" ]]; then printf '%s\\n' "$prefix" > "$output"; else printf '%s\\n' "$prefix"; fi
+  exit 18
+fi
+if "$simulated"; then
+  # Replay a curl transfer without opening a socket in the sandbox.
+  IFS=, read -ra responses <<< "$FIXTURE_HTTP_SEQUENCE"
+  attempt=0
+  for status in "\${responses[@]}"; do
+    printf '%s\\n' "$status" >> "$FIXTURE_HTTP_CALLS"
+    if [[ "$status" == 200 ]]; then break; fi
+    printf '%s' 'incomplete transfer' > "$output"
+    if [[ "$status" != 503 || "$attempt" -ge "$retries" ]]; then exit 22; fi
+    ((attempt += 1))
+  done
+fi
 exec "$FIXTURE_CURL" "\${args[@]}"
 `, { mode: 0o755 });
   writeFileSync(join(bin, 'codex'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   const log = join(root, 'calls');
+  const curlLog = join(root, 'curl-calls');
   const env = {
     ...process.env,
     CODEX_HOME: home,
@@ -71,6 +102,8 @@ exec "$FIXTURE_CURL" "\${args[@]}"
     TMPDIR: temp,
     FIXTURE_ARCHIVE_URL: pathToFileURL(archive).href,
     FIXTURE_CALLS: log,
+    FIXTURE_CURL_CALLS: curlLog,
+    FIXTURE_HTTP_CALLS: join(root, 'http-calls'),
     FIXTURE_CURL: (await exec('bash', ['-c', 'command -v curl'])).stdout.trim(),
     FIXTURE_INSTALL_URL: new URL('../scripts/install.sh', import.meta.url).href,
     FIXTURE_UNINSTALL_URL: new URL('../uninstall.sh', import.meta.url).href,
@@ -93,6 +126,10 @@ exec "$FIXTURE_CURL" "\${args[@]}"
     },
     calls() {
       return existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse) : [];
+    },
+    downloads() {
+      if (!existsSync(curlLog)) return [];
+      return readFileSync(curlLog, 'utf8').split('\0\0').slice(0, -1).map(call => call.split('\0'));
     },
   };
 }
@@ -122,6 +159,104 @@ test('Bash online install runs the manager from a release ZIP and cleans up', ba
   assert.equal(action, 'install');
   assert.ok(script.startsWith(`${run.temp}/`) && script.endsWith('/codex-hub/scripts/manage.mjs'), script);
   assert.deepEqual(readdirSync(run.temp), []);
+});
+
+test('Bash online recovery enables bounded curl retries with replaceable output files', bashOnly, async t => {
+  const run = await fixture(t);
+  writeFileSync(join(run.home, transaction), '{}');
+  assert.equal((await run.launch('uninstall.sh')).status, 0);
+  const [, bootstrap, archive] = run.downloads();
+  for (const args of [bootstrap, archive]) {
+    assert.equal(args[args.indexOf('--retry') + 1], '3');
+    assert.ok(args.includes('--retry-connrefused'));
+    assert.ok(args.includes('--retry-max-time') && args.includes('--max-time'));
+    assert.ok(args.includes('-o') && args[args.indexOf('-o') + 1].startsWith(`${run.temp}/`));
+  }
+  assert.deepEqual(readdirSync(run.temp), []);
+});
+
+test('Bash uninstall recovery discards a truncated bootstrap before it can run', bashOnly, async t => {
+  const run = await fixture(t);
+  const config = join(run.home, 'config.toml');
+  writeFileSync(config, 'unchanged\n');
+  writeFileSync(join(run.home, transaction), '{}');
+  const result = await run.launch('uninstall.sh', { FIXTURE_INSTALL_URL: 'fixture:partial' });
+  assert.equal(result.status, 18);
+  assert.equal(existsSync(join(run.home, 'partial-ran')), false);
+  assert.equal(readFileSync(config, 'utf8'), 'unchanged\n');
+  assert.deepEqual(run.calls(), []);
+  assert.deepEqual(readdirSync(run.temp), []);
+});
+
+test('Bash installer uses a complete retry response and preserves the installation when downloads fail', bashOnly, async t => {
+  const run = await fixture(t);
+  const runtime = managedRuntime(run.home);
+  const marked = join(runtime, marker);
+  const config = join(run.home, 'config.toml');
+  const httpLog = join(run.root, 'http-calls');
+  writeFileSync(config, '[tui]\nstatus_line = ["model"]\n');
+  for (const { sequence, expected, status } of [
+    { sequence: '503,503,200', expected: '503\n503\n200\n', status: 0 },
+    { sequence: '404,200', expected: '404\n', status: 22 },
+    { sequence: '503,503,503,503,200', expected: '503\n503\n503\n503\n', status: 22 },
+  ]) {
+    writeFileSync(httpLog, '');
+    const previousCalls = run.calls().length;
+    const result = await run.launch('scripts/install.sh', {
+      FIXTURE_ARCHIVE_URL: 'fixture:http',
+      FIXTURE_HTTP_SEQUENCE: sequence,
+      FIXTURE_RESPONSE_URL: pathToFileURL(run.archive).href,
+    });
+    assert.equal(result.status, status, result.stderr);
+    assert.equal(readFileSync(httpLog, 'utf8'), expected);
+    assert.equal(run.calls().length - previousCalls, status === 0 ? 1 : 0);
+    assert.equal(readFileSync(marked, 'utf8'), manifest);
+    assert.equal(readFileSync(config, 'utf8'), '[tui]\nstatus_line = ["model"]\n');
+    assert.deepEqual(readdirSync(run.temp), []);
+  }
+});
+
+test('Bash release download recovers from HTTP 503 and stops on permanent or exhausted failures', bashOnly, async t => {
+  const run = await fixture(t);
+  const archive = readFileSync(run.archive);
+  let statuses;
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    const status = statuses[Math.min(requests++, statuses.length - 1)];
+    if (status === 200) response.writeHead(status).end(archive);
+    else response.writeHead(status, { 'Retry-After': '1' }).end('Temporary or permanent failure');
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+  } catch (error) {
+    if (['EPERM', 'EACCES'].includes(error.code)) {
+      t.skip('Loopback sockets are unavailable in this sandbox');
+      return;
+    }
+    throw error;
+  }
+  t.after(() => server.close());
+  const override = { FIXTURE_ARCHIVE_URL: `http://127.0.0.1:${server.address().port}/release.zip`, NO_PROXY: '*', no_proxy: '*' };
+  const config = join(run.home, 'config.toml');
+  writeFileSync(config, 'unchanged\n');
+  for (const { sequence, attempts, installed } of [
+    { sequence: [503, 503, 200], attempts: 3, installed: true },
+    { sequence: [404], attempts: 1, installed: false },
+    { sequence: [503], attempts: 4, installed: false },
+  ]) {
+    requests = 0;
+    statuses = sequence;
+    const previousCalls = run.calls().length;
+    const result = await run.launch('scripts/install.sh', override);
+    assert.equal(result.status === 0, installed, result.stderr);
+    assert.equal(requests, attempts);
+    assert.equal(run.calls().length - previousCalls, Number(installed));
+    assert.equal(readFileSync(config, 'utf8'), 'unchanged\n');
+    assert.deepEqual(readdirSync(run.temp), []);
+  }
 });
 
 test('Bash online install leaves existing configuration intact after a failed download or invalid ZIP', bashOnly, async t => {

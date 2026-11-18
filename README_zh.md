@@ -46,6 +46,8 @@ node "%CODEX_HUB_CLI%" launch --
 
 安装器从 GitHub 最新正式发行版下载 `codex-hub.zip`，并将运行文件放在 `$CODEX_HOME/codex-hub`，默认为 `~/.codex/codex-hub`。已设置 `CODEX_HOME` 时，安装、启动和卸载都使用同一个值。
 
+下载发行包遇到临时连接故障或 HTTP 429、503 等响应时，安装器会自动重试。如果开头的脚本下载失败，重新运行同一条命令即可。
+
 Linux、macOS 和 WSL 的安装器根据 `$SHELL` 选择 Bash 或 Zsh。Windows 使用当前用户的 PowerShell 全宿主配置文件。已有的 `codex` 别名和函数优先。重新运行同一条安装命令可以升级，完成后请新开交互式 shell。首次安装时若想手动启动，可在运行安装器之前设置 `CODEX_HUB_SHELL=none`，之后使用[显式启动命令](#诊断与显式启动)。
 
 ## 使用 HUD
@@ -54,7 +56,9 @@ Linux、macOS 和 WSL 的安装器根据 `$SHELL` 选择 Bash 或 Zsh。Windows 
 
 Codex CLI 0.170.0 对带命令行界面覆盖的会话使用内嵌的 app-server。若本次需要沿用原有的共享后台服务器设置，可在 Bash 或 Zsh 运行 `CODEX_HUB_BYPASS=1 codex`，或在 PowerShell 运行 `& (Get-Command codex -CommandType Application | Select-Object -First 1).Source`。
 
-基础行显示当前模型与推理档位、工作区与 Git 分支、Codex 版本、上下文用量和系统内存。终端支持 OSC 8 时，可点击工作区名称打开本地目录。额度显示剩余比例，有重置时间时附倒计时。内存取自 Codex 所处环境，例如 WSL。记录用量后会出现词元行，有数据时区分非缓存输入、输出和缓存输入。符合条件的企业会话在 Codex 提供估算费用时会显示该值。
+基础行显示当前模型与推理档位、工作区与 Git 分支、Codex 版本、上下文用量和系统内存。终端支持 OSC 8 时，可点击工作区名称打开本地目录。内存取自 Codex 所处环境，例如 WSL。记录用量后会出现词元行，有数据时区分非缓存输入、输出和缓存输入。符合条件的企业会话在 Codex 提供估算费用时会显示该值。
+
+使用官方 OpenAI 提供方的会话会显示本机 Codex app-server 返回的额度分组。只有一组时，额度仍放在上下文旁边。多组额度显示在活动行下方，标出组名，进度条按剩余比例填充、按已用比例着色。有重置时间时显示倒计时。账户额度不可用时，使用会话记录或原生状态栏中已有的额度。截图来自 WSL 中实际运行的 Codex CLI，额度使用符合官方格式的受控响应。[分组额度示例](docs/hud-quotas.png)
 
 ![Codex 输入框下显示工具和子代理的 HUD](docs/hud-active.png)
 
@@ -117,6 +121,8 @@ powershell -NoProfile -Command "irm https://raw.githubusercontent.com/yuwenlong/
 
 卸载器清理受管的启动入口与运行文件。状态栏仍由 Codex Hub 管理时会还原备份，后来手动改过的值会保留。结束后请新开 shell。若安装或卸载被强制终止且重试提示锁仍存在，请确认相关进程已经退出，删除报错路径指向的空锁目录，然后重试原命令。
 
+存在完整的本地安装时，卸载器会直接使用本地文件。如果需要下载发行包来恢复不完整的安装，卸载器会自动重试临时故障。
+
 ## 从 ZIP 手动安装
 
 解压 `codex-hub.zip`，进入解压出的 `codex-hub` 目录。`CODEX_HOME` 设置与在线安装相同。[下载 codex-hub.zip](https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip)
@@ -141,6 +147,8 @@ node .\scripts\manage.mjs install
 ```sh
 node ./bin/codex-hub.mjs launch --
 ```
+
+这条命令会从当前源码目录启动本机已安装的 Codex，运行期间自动刷新活动数据。修改渲染代码后重新运行该命令即可看到变化，无需发布到 npm。
 
 ```sh
 npm test

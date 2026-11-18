@@ -27,7 +27,8 @@ trap 'rm -rf -- "$temp_dir"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 archive="$temp_dir/codex-hub.zip"
-curl -fsSL --proto-redir '=https' 'https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip' -o "$archive"
+curl -fsSL --proto-redir '=https' --retry 3 --retry-connrefused --retry-max-time 30 \
+  --connect-timeout 10 --max-time 60 'https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip' -o "$archive"
 unzip -q "$archive" -d "$temp_dir/package"
 manager="$temp_dir/package/codex-hub/scripts/manage.mjs"
 if [[ ! -f "$manager" ]]; then

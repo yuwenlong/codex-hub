@@ -5,6 +5,50 @@ param(
 
 & {
     $ErrorActionPreference = 'Stop'
+
+    function Save-CodexHubDownload($url, $destination) {
+        for ($attempt = 0; ; $attempt++) {
+            try {
+                Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $destination -TimeoutSec 60
+                return
+            } catch {
+                if ($attempt -eq 3) { throw }
+                $failure = $_.Exception
+                $response = if ($failure.PSObject.Properties['Response']) { $failure.Response }
+                $delay = [int][Math]::Pow(2, $attempt)
+                if ($response) {
+                    if ([int]$response.StatusCode -notin 408, 429, 500, 502, 503, 504, 522, 524) { throw }
+                    $retryAfter = if ($response -is [System.Net.HttpWebResponse]) {
+                        $response.Headers['Retry-After']
+                    } else {
+                        [string]$response.Headers.RetryAfter
+                    }
+                    [long]$seconds = 0
+                    $date = [DateTimeOffset]::MinValue
+                    if ([long]::TryParse($retryAfter, [ref]$seconds) -and $seconds -ge 0) {
+                        $delay = $seconds
+                    } elseif ($retryAfter -match '^[0-9]+$') {
+                        throw
+                    } elseif ([DateTimeOffset]::TryParse($retryAfter, [Globalization.CultureInfo]::InvariantCulture,
+                            [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$date)) {
+                        $delay = [Math]::Max(0, [Math]::Ceiling(($date - [DateTimeOffset]::UtcNow).TotalSeconds))
+                    }
+                    if ($delay -gt 30) { throw }
+                } elseif ($failure -is [System.Net.WebException]) {
+                    if ([string]$failure.Status -notin 'ConnectFailure', 'ConnectionClosed', 'KeepAliveFailure',
+                        'NameResolutionFailure', 'ProxyNameResolutionFailure', 'ReceiveFailure', 'SendFailure', 'Timeout') { throw }
+                } else {
+                    $cause = $failure.GetBaseException()
+                    $networkError = $cause.PSObject.Properties['HttpRequestError'] -and
+                        [string]$cause.HttpRequestError -in 'NameResolutionError', 'ConnectionError', 'ResponseEnded'
+                    if (-not $networkError -and $cause -isnot [System.TimeoutException] -and
+                        $cause -isnot [System.Net.Sockets.SocketException]) { throw }
+                }
+                Start-Sleep -Seconds $delay
+            }
+        }
+    }
+
     $node = (Get-Command node -CommandType Application -ErrorAction SilentlyContinue).Source
     if (-not $node) {
         throw 'codex-hub: Node.js 22 or newer is required on PATH.'
@@ -26,7 +70,7 @@ param(
         $archive = Join-Path $tempDir 'codex-hub.zip'
         $package = Join-Path $tempDir 'package'
         $releaseUrl = 'https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip'
-        Invoke-WebRequest -UseBasicParsing -Uri $releaseUrl -OutFile $archive
+        Save-CodexHubDownload $releaseUrl $archive
         Expand-Archive -LiteralPath $archive -DestinationPath $package
         $manager = Join-Path $package 'codex-hub/scripts/manage.mjs'
         if (-not (Test-Path -LiteralPath $manager -PathType Leaf)) {

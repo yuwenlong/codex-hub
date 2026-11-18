@@ -320,7 +320,8 @@ test('retries upgrading an owned v0.1.1 footer after the app-server rejects the 
   assert.equal(run(cli, ['--version']).output.trim(), '0.1.1');
 
   assertSuccess(manage('install'));
-  assert.equal(run(cli, ['--version']).output.trim(), '0.2.0');
+  const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  assert.equal(run(cli, ['--version']).output.trim(), version);
   assert.ok(JSON.parse(await readFile(config, 'utf8')).tui.status_line.includes('codex-version'));
   assert.deepEqual(JSON.parse(await readFile(backup, 'utf8')).original, original.tui.status_line);
   assertSuccess(manage('uninstall', { source: runtime }));
