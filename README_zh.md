@@ -179,4 +179,14 @@ npm run test:integration
 
 集成测试以 Codex CLI 0.170.0 为验证基准，使用含空格和中文的临时配置目录与工作目录。[Tests 工作流](https://github.com/yuwenlong/codex-hub/actions/workflows/test.yml)
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=yuwenlong%2Fcodex-hub&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=yuwenlong/codex-hub&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=yuwenlong/codex-hub&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=yuwenlong/codex-hub&type=date&legend=top-left" />
+ </picture>
+</a>
+
 [Codex CLI 文档](https://learn.chatgpt.com/docs/codex/cli) · [MIT 许可证](LICENSE)
