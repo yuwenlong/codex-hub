@@ -24,7 +24,7 @@ const terminal = process.stdout.isTTY && process.env.TERM !== 'dumb';
 const noFooterToRestore = '当前无需还原状态栏设置。';
 
 function outputOptions() {
-  return { color: Boolean(terminal && process.stdout.hasColors()), width: process.stdout.columns };
+  return { color: Boolean(terminal && !process.env.NO_COLOR && process.stdout.hasColors()), width: process.stdout.columns };
 }
 
 function printDoctor({ installed, overridden, statusLine } = {}) {
@@ -53,7 +53,7 @@ async function watch(connect, readFrame) {
       if (signal.aborted) break;
       const frame = await readFrame(client);
       if (signal.aborted) break;
-      process.stdout.write(`\u001b[H\u001b[J${frame}\n`);
+      process.stdout.write(`\u001b[H\u001b[J${frame}`);
       await delay(2500, undefined, { signal });
     }
   } catch (error) {
@@ -117,14 +117,16 @@ async function main() {
     const threadId = values.thread?.trim() ?? (values.cwd === undefined ? process.env.CODEX_THREAD_ID?.trim() : undefined);
     if (home === null && threadId) throw new Error('无法读取指定的 Codex 会话。');
     const { readActivity, renderActivity } = await import('../lib/activity.mjs');
+    const live = command === 'watch' && terminal;
+    let activityHome = home;
     const readFrame = async (client) => {
-      const snapshot = client ? await readActivity(client, { cwd, threadId }) : { workspace: '当前工作区' };
-      return renderActivity(snapshot, outputOptions());
+      const snapshot = await readActivity(client, { cwd, threadId, home: activityHome, waitForCost: !live });
+      return renderActivity(snapshot, { ...outputOptions(), height: live ? process.stdout.rows : undefined });
     };
-    if (command === 'watch' && terminal) {
+    if (live) {
       await watch(async (signal) => {
-        const targetHome = home ?? await locateHome();
-        if (targetHome !== null && !signal.aborted) return connect(targetHome);
+        activityHome ??= await locateHome();
+        if (activityHome !== null && !signal.aborted) return connect(activityHome);
       }, readFrame);
     } else {
       const client = home === null ? null : await connect(home);

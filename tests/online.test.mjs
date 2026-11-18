@@ -209,6 +209,22 @@ test('Bash online uninstall uses the release for a pending transaction with a co
   assert.deepEqual(readdirSync(run.temp), []);
 });
 
+test('Bash online uninstall uses the release for a pending footer migration with a legacy runtime', bashOnly, async t => {
+  const run = await fixture(t);
+  managedRuntime(run.home);
+  writeFileSync(join(run.home, 'codex-hub-statusline.json'), JSON.stringify({
+    version: 2, original: ['model'], applied: ['model-with-reasoning', 'codex-version'],
+    pending: true, previous: ['model-with-reasoning'],
+  }));
+  const result = await run.launch('uninstall.sh');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(run.calls().length, 1);
+  const [[script, action]] = run.calls();
+  assert.equal(action, 'uninstall');
+  assert.ok(script.startsWith(`${run.temp}/`), script);
+  assert.deepEqual(readdirSync(run.temp), []);
+});
+
 test('Bash online uninstall preserves errors from the complete local runtime', bashOnly, async t => {
   const run = await fixture(t);
   const runtime = managedRuntime(run.home);

@@ -18,7 +18,7 @@ readline.createInterface({input: createReadStream(null, { fd: 0 })}).on('line', 
   if (method === 'initialize') {
     if (params.clientInfo.name !== 'codex_hub') process.exit(2)
     capabilities = params.capabilities ?? null
-    reply({ id, result: {} })
+    reply({ id, result: { userAgent: 'codex_hub/0.170.0 (Fixture OS) fixture (codex_hub; 0.1.2)' } })
   } else if (method === 'initialized') {
     initialized = true
   } else if (!initialized) {
@@ -59,6 +59,7 @@ test('initializes over stdio and matches out-of-order replies', async t => {
   const { openClient } = await import('../lib/app-server.mjs')
   const client = await openClient(await fixture(t))
   t.after(() => client.close())
+  assert.equal(client.codexVersion, '0.170.0')
   assert.equal(await client.request('capabilities'), null)
   const replies = await Promise.all([
     client.request('check', { delay: 10 }),
@@ -84,6 +85,14 @@ test('enables the experimental protocol only when requested', async t => {
   const client = await openClient({ ...await fixture(t), experimentalApi: true })
   t.after(() => client.close())
   assert.deepEqual(await client.request('capabilities'), { experimentalApi: true })
+})
+
+test('an optional request can time out while the app server stays open', { timeout: 1500 }, async t => {
+  const { openClient } = await import('../lib/app-server.mjs')
+  const client = await openClient(await fixture(t))
+  t.after(() => client.close())
+  await assert.rejects(client.request('hold', undefined, { timeoutMs: 20 }), /hold timed out/u)
+  assert.equal(await client.request('capabilities'), null)
 })
 
 test('explains when Codex is unavailable', async t => {

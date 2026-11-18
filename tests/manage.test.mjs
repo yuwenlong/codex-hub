@@ -11,6 +11,10 @@ import { STATUS_LINE } from '../lib/installation.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const backupName = 'codex-hub-statusline.json';
 const transactionName = '.codex-hub-transaction.json';
+const legacyStatusLine = [
+  'model-with-reasoning', 'project-name', 'git-branch', 'context-used',
+  'five-hour-limit', 'weekly-limit', 'task-progress',
+];
 const mockServer = String.raw`
 const { createReadStream, mkdirSync, readFileSync, writeFileSync, writeSync } = require('node:fs');
 const { join } = require('node:path');
@@ -116,6 +120,21 @@ async function clearInterruptedLocks(home, backup) {
   await rmdir(`${backup}.lock`);
 }
 
+async function legacyInstallation(t) {
+  const installed = await fixture(t);
+  const { runtime, config, backup, original, manage } = installed;
+  await writeFile(config, JSON.stringify({ tui: { ...original.tui, status_line: legacyStatusLine } }));
+  assertSuccess(manage('install'));
+  const metadata = join(runtime, 'package.json');
+  await writeFile(metadata, JSON.stringify({ ...JSON.parse(await readFile(metadata, 'utf8')), version: '0.1.1' }));
+  return {
+    ...installed,
+    async saveLegacyBackup() {
+      await writeFile(backup, JSON.stringify({ version: 1, original: original.tui.status_line, applied: legacyStatusLine }));
+    },
+  };
+}
+
 test('installs a relocatable runtime and preserves extra files through upgrade and removal', async (t) => {
   const { temp, runtime, config, backup, original, manage, run } = await fixture(t);
   const cli = join(runtime, 'bin', 'codex-hub.mjs');
@@ -141,6 +160,49 @@ test('installs a relocatable runtime and preserves extra files through upgrade a
   await assert.rejects(lstat(backup), { code: 'ENOENT' });
   await assert.rejects(lstat(cli), { code: 'ENOENT' });
   assert.equal(await readFile(extra, 'utf8'), 'user data');
+});
+
+test('retries upgrading an owned v0.1.1 footer after the app-server rejects the write', async (t) => {
+  const { runtime, config, backup, original, manage, run, saveLegacyBackup } = await legacyInstallation(t);
+  await saveLegacyBackup();
+
+  const rejected = manage('install', { additionalEnv: { CODEX_HUB_TEST_REJECT_WRITE: '1' } });
+  assert.equal(rejected.status, 1, rejected.output);
+  assert.match(rejected.output, /fixture refused footer write/);
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, legacyStatusLine);
+  const cli = join(runtime, 'bin', 'codex-hub.mjs');
+  assert.equal(run(cli, ['--version']).output.trim(), '0.1.1');
+
+  assertSuccess(manage('install'));
+  assert.equal(run(cli, ['--version']).output.trim(), '0.1.2');
+  assert.ok(JSON.parse(await readFile(config, 'utf8')).tui.status_line.includes('codex-version'));
+  assert.deepEqual(JSON.parse(await readFile(backup, 'utf8')).original, original.tui.status_line);
+  assertSuccess(manage('uninstall', { source: runtime }));
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
+});
+
+test('uninstall restores the original footer when upgrade is interrupted at runtime publication', async (t) => {
+  const { temp, home, runtime, config, backup, original, manage, run, saveLegacyBackup } = await legacyInstallation(t);
+  await saveLegacyBackup();
+  const checkpoint = await interruptRuntimeRename(temp, home, 'install');
+  const interrupted = run(join(root, 'scripts', 'manage.mjs'), ['install'], {}, checkpoint);
+  assert.equal(interrupted.status, 86, interrupted.output);
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, legacyStatusLine);
+
+  await clearInterruptedLocks(home, backup);
+  assertSuccess(manage('uninstall'));
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
+  await assert.rejects(lstat(backup), { code: 'ENOENT' });
+  await assert.rejects(lstat(runtime), { code: 'ENOENT' });
+});
+
+test('keeps an unowned v0.1.1 footer during an upgrade', async (t) => {
+  const { config, backup, original, manage } = await legacyInstallation(t);
+  assertSuccess(manage('install'));
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, legacyStatusLine);
+  await assert.rejects(lstat(backup), { code: 'ENOENT' });
+  assertSuccess(manage('uninstall'));
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), { tui: { ...original.tui, status_line: legacyStatusLine } });
 });
 
 test('preserves footer edits and the first backup across repeated installs', async (t) => {
@@ -181,6 +243,22 @@ test('rejects a malformed legacy backup and preserves its bytes', async (t) => {
   assert.equal(await readFile(backup, 'utf8'), '{}\n');
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
   await assert.rejects(lstat(runtime), { code: 'ENOENT' });
+});
+
+test('rejects a package missing the HUD metrics before applying the footer', async (t) => {
+  const { temp, config, backup, original, manage } = await fixture(t);
+  const badPackage = join(temp, 'missing metrics');
+  await mkdir(badPackage);
+  for (const path of ['bin', 'lib', 'scripts', 'package.json', 'LICENSE']) {
+    await cp(join(root, path), join(badPackage, path), { recursive: true });
+  }
+  await rm(join(badPackage, 'lib', 'hud-metrics.mjs'));
+
+  const result = manage('install', { source: badPackage });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /lib\/hud-metrics\.mjs/u);
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
+  await assert.rejects(lstat(backup), { code: 'ENOENT' });
 });
 
 test('restores a legacy footer backup without removing a manual copy', async (t) => {

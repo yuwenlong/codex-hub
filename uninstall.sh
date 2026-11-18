@@ -31,7 +31,17 @@ if has_local_runtime; then
     echo 'codex-hub: Node.js 22 or newer is required on PATH.' >&2
     exit 1
   fi
-  exec node "$manager" uninstall
+  # A legacy runtime cannot restore both possible values from a pending footer migration.
+  if [[ ! -f "$backup" || -L "$backup" ]] || ! node -e '
+    try {
+      const backup = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+      process.exitCode = backup?.version === 2 ? 0 : 1;
+    } catch {
+      process.exitCode = 1;
+    }
+  ' -- "$backup"; then
+    exec node "$manager" uninstall
+  fi
 fi
 
 if [[ "$pending" == true || -e "$backup" || "$manifest" == codex-hub-runtime-v1$'\n'* ]]; then

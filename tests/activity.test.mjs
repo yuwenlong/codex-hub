@@ -7,6 +7,7 @@ const cwd = resolve('测试 工作区');
 const thread = {
   id: '01a1edf5-2874-73b1-8315-cd718563165b', cwd, source: 'cli', historyMode: 'paginated',
   status: { type: 'notLoaded' }, model: 'gpt-6.2', reasoningEffort: 'high', modelProvider: 'openai',
+  cliVersion: '0.170.0', createdAt: 1760000000,
   gitInfo: { branch: 'main', originUrl: 'secret-remote' }, preview: 'secret-prompt',
 };
 const turn = { id: 'turn-1', items: [], status: 'completed' };
@@ -27,9 +28,8 @@ test('activity selects the newest main session in the exact workspace', async ()
       return { data: [] };
     },
   };
-  const output = renderActivity(await readActivity(client, { cwd }));
-  assert.match(output, /gpt-6\.2.*high/);
-  assert.match(output, /main/);
+  const output = renderActivity(await readActivity(client, { cwd }), { now: 1760006960 });
+  assert.match(output, /^\[gpt-6\.2 ● high\] │ 测试 工作区 git:\(main\) │ Codex v0\.170\.0 │ ⏱ 1h 56m\n/);
   assert.doesNotMatch(output, /secret-|wrong-workspace|child/);
 });
 
@@ -56,12 +56,33 @@ test('activity pages the latest turn and emits only sanitized activity metadata'
   };
   const snapshot = await readActivity(client, { threadId: thread.id });
   const output = renderActivity(snapshot);
-  assert.match(output, /Shell.*1 进行中.*1 完成/);
-  assert.match(output, /MCP repo\/status.*1 失败/);
+  assert.match(output, /◐ Shell │ ✓ Shell/);
+  assert.match(output, /MCPs \(1\) ✗ repo\/status/);
   assert.match(output, /worker.*gpt-6\.2.*low.*完成/);
   assert.match(output, /计划/);
   assert.doesNotMatch(JSON.stringify(snapshot), /secret-|\\u001b/);
   assert.doesNotMatch(output, /secret-|\u001b/);
+});
+
+test('activity shows explicitly selected skills without implying they ran', async () => {
+  const selected = ['terminal-layout\u001b', 'terminal-layout', 'process-monitor', 'tidy-checks', 'quick-diff', 'another-skill'];
+  const items = [{ id: 'u1', type: 'userMessage', content: [
+    { type: 'text', text: 'secret-prompt', text_elements: [] },
+    { type: 'mention', name: 'ordinary-mention', path: '/tmp/secret-mention-path' },
+    ...selected.map(name => ({ type: 'skill', name, path: '/tmp/secret-skill-path' })),
+  ] }];
+  const client = {
+    async request(method) {
+      if (method === 'thread/read') return { thread: { ...thread, historyMode: 'legacy' } };
+      assert.equal(method, 'thread/turns/list');
+      return { data: [{ ...turn, items }] };
+    },
+  };
+  const snapshot = await readActivity(client, { threadId: thread.id });
+  const output = renderActivity(snapshot);
+  assert.match(output, /^▸ Skills \(5\) 已选 terminal-layout, process-monitor, tidy-checks, quick-diff, \+1 项$/m);
+  assert.doesNotMatch(output, /暂无已记录活动|another-skill|ordinary-mention|secret-|\u001b/);
+  assert.doesNotMatch(JSON.stringify(snapshot), /ordinary-mention|secret-|\\u001b/);
 });
 
 test('legacy history uses the latest full turn and reuses an unchanged snapshot', async () => {
@@ -82,7 +103,7 @@ test('legacy history uses the latest full turn and reuses an unchanged snapshot'
   };
   const options = { threadId: thread.id };
   const output = renderActivity(await readActivity(client, options));
-  assert.match(output, /文件变更.*1 完成/);
+  assert.match(output, /✓ 文件变更/);
   assert.match(output, /最近回合有已保存计划/);
   assert.doesNotMatch(output, /范围|secret-/);
   await readActivity(client, options);
@@ -119,17 +140,44 @@ test('a bounded paginated turn distinguishes an empty recent window from the ful
 
   pages.get('second').data.splice(0, 2, ...remaining);
   const activeWindow = renderActivity(await readActivity(client, options));
-  assert.match(activeWindow, /范围 最近 64 项\n工具 Shell \| 1 完成/);
+  assert.match(activeWindow, /范围 最近 64 项\n✓ Shell/);
   assert.match(activeWindow, /此范围有已保存计划/);
   assert.doesNotMatch(activeWindow, /暂无|最近回合有已保存计划/);
 });
 
 test('activity renders an empty workspace, a narrow preview, and server failure safely', async () => {
-  const client = { request: async () => ({ data: [] }) };
-  assert.match(renderActivity(await readActivity(client, { cwd })), /没有.*会话/);
-  const narrow = renderActivity(previewActivity(), { width: 16 });
-  assert.ok(narrow.split('\n').every(line => [...line].reduce((size, part) => size + (part.codePointAt(0) > 127 ? 2 : 1), 0) <= 16));
+  const client = { codexVersion: '0.170.0', request: async () => ({ data: [] }) };
+  const empty = renderActivity(await readActivity(client, { cwd }));
+  assert.match(empty, /没有.*会话。 │ Codex v0\.170\.0\n内存/);
+  assert.doesNotMatch(empty, /上下文|词元|5h/);
+  const narrow = renderActivity({ ...previewActivity(), workspace: resolve('超长项目中测试目录') }, { width: 16 });
+  assert.ok(narrow.split('\n').every(line => [...line].reduce((size, part) => size + (/\p{Script=Han}|\p{Extended_Pictographic}/u.test(part) ? 2 : 1), 0) <= 16));
+  assert.match(narrow, /上下文 .*32%\n5h 剩余 53%/);
   assert.doesNotMatch(narrow, /\u001b/);
   const failing = { request: async () => { throw new Error('secret-protocol-text'); } };
   await assert.rejects(readActivity(failing, { cwd }), /^Error: 无法读取 Codex 会话列表。$/);
+});
+
+test('the full preview draws the same compact progress, environment, activity, and token rows', () => {
+  const output = renderActivity(previewActivity());
+  const lines = output.split('\n');
+  assert.match(lines[0], /^\[.+ ● .+\] │ .+ git:\(main\) │ Codex v\d+\.\d+\.\d+ .*费用 \$34\.95 │ 示例/);
+  assert.match(lines[1], /^上下文 ███░░░░░░░ 32% │ 5h 剩余 53% \(54m\) │ 7d 剩余 39% \(6d 14h\)/);
+  assert.match(lines[2], /^内存 +█████░░░░░ .*GB \/ .*GB \(46%\)/);
+  assert.match(lines[3], /^2 AGENTS\.md │ 6 MCPs │ 1 钩子/);
+  assert.match(output, /✓ Shell ×20\n▸ Skills \(2\) 已选 superpowers:systematic-debugging, ponytail:ponytail\nMCPs \(2\)/);
+  assert.match(lines.at(-1), /^词元 9\.9M \(输入 678k, 输出 31k, 缓存 9\.2M\)$/);
+  const colored = renderActivity(previewActivity(), { color: true });
+  assert.match(colored, /\u001b\[32m███\u001b\[0m/);
+  assert.match(colored, /\u001b\[36m\[/);
+});
+
+test('a short interactive frame retains the header and reports hidden rows', () => {
+  const snapshot = previewActivity();
+  const full = renderActivity(snapshot, { width: 24 }).split('\n');
+  assert.ok(full.length > 10);
+  const cropped = renderActivity(snapshot, { width: 24, height: 10 }).split('\n');
+  assert.deepEqual(cropped.slice(0, -1), full.slice(0, 9));
+  assert.equal(cropped.at(-1), `… 另有 ${full.length - 9} 行`);
+  assert.equal(renderActivity(snapshot, { width: 24, height: 1 }), full[0]);
 });

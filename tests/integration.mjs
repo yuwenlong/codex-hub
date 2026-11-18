@@ -60,8 +60,10 @@ test('uninstall removes a status line introduced by Codex Hub', (t) => {
 
 test('redirected watch prints one snapshot for the requested workspace', (t) => {
   const { cwd, run } = createWorkspace(t);
-  const snapshot = run('status', '--cwd', cwd);
-  assert.match(snapshot, /会话|session/i);
-  assert.equal(run('watch', '--cwd', cwd), snapshot);
-  assert.doesNotMatch(snapshot, /\u001b/);
+  for (const command of ['status', 'watch']) {
+    const snapshot = run(command, '--cwd', cwd);
+    assert.equal(snapshot.match(/测试 项目.*没有已记录的会话/g)?.length, 1);
+    assert.equal(snapshot.match(/^内存/gm)?.length, 1);
+    assert.doesNotMatch(snapshot, /\u001b/);
+  }
 });

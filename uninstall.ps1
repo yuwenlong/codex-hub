@@ -5,7 +5,8 @@
     $scripts = Join-Path $runtime 'scripts'
     $manager = Join-Path $scripts 'manage.mjs'
     $marker = Join-Path $runtime '.codex-hub-managed'
-    $hasBackup = Test-Path -LiteralPath (Join-Path $codexHome 'codex-hub-statusline.json')
+    $backup = Join-Path $codexHome 'codex-hub-statusline.json'
+    $hasBackup = Test-Path -LiteralPath $backup
     $transaction = Join-Path $codexHome '.codex-hub-transaction.json'
     $pending = Get-Item -LiteralPath $transaction -Force -ErrorAction SilentlyContinue
 
@@ -34,7 +35,18 @@
         return $true
     }
 
-    if (Test-LocalRuntime) {
+    function Test-PendingFooterMigration {
+        if (-not (Test-ManagedItem $backup $false)) { return $false }
+        try {
+            $metadata = Get-Content -LiteralPath $backup -Encoding UTF8 -Raw | ConvertFrom-Json
+            return $metadata.version -eq 2
+        } catch {
+            return $false
+        }
+    }
+
+    # A legacy runtime cannot restore both possible values from a pending footer migration.
+    if ((Test-LocalRuntime) -and -not (Test-PendingFooterMigration)) {
         $node = (Get-Command node -CommandType Application -ErrorAction SilentlyContinue).Source
         if (-not $node) {
             throw 'codex-hub: Node.js 22 or newer is required on PATH.'

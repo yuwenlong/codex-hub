@@ -14,7 +14,7 @@ const transactionName = '.codex-hub-transaction.json';
 const stagingPrefix = '.codex-hub-runtime-';
 const folders = ['bin', 'lib', 'scripts'];
 const baseFiles = ['package.json', 'LICENSE', cli, 'scripts/manage.mjs'];
-const required = [...baseFiles, 'lib/activity.mjs', 'lib/app-server.mjs', 'lib/installation.mjs'];
+const required = [...baseFiles, 'lib/activity.mjs', 'lib/app-server.mjs', 'lib/hud-metrics.mjs', 'lib/installation.mjs'];
 const library = /^lib\/[\w.-]+\.mjs$/u;
 const inspect = path => lstatSync(path, { bigint: true, throwIfNoEntry: false });
 const fileKey = name => process.platform === 'win32' ? name.toLowerCase() : name;
