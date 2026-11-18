@@ -179,4 +179,14 @@ npm run test:integration
 
 The integration tests use Codex CLI 0.170.0 and temporary configuration and working directories with spaces and Chinese characters. [Tests workflow](https://github.com/yuwenlong/codex-hub/actions/workflows/test.yml)
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=yuwenlong%2Fcodex-hub&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=yuwenlong/codex-hub&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=yuwenlong/codex-hub&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=yuwenlong/codex-hub&type=date&legend=top-left" />
+ </picture>
+</a>
+
 [Codex CLI docs](https://learn.chatgpt.com/docs/codex/cli) · [MIT License](LICENSE)
