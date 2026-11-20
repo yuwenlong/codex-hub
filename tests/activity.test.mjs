@@ -164,11 +164,11 @@ test('the full preview draws the same compact progress, environment, activity, a
   const output = renderActivity(previewActivity());
   const lines = output.split('\n');
   assert.match(lines[0], /^\[.+ ● .+\] │ .+ git:\(main\) │ Codex v\d+\.\d+\.\d+ .*费用 \$34\.95 │ 示例/);
-  assert.match(lines[1], /^上下文 ███░░░░░░░ 32% │ 5h 剩余 53% \(54m\) │ 7d 剩余 39% \(6d 14h\)/);
+  assert.match(lines[1], /^上下文 ███░░░░░░░ 32% │ 5h 剩余 53% \(54m\) │ 7d 剩余 39% \(6d 14h 0m\)/);
   assert.match(lines[2], /^内存 +█████░░░░░ 46% \(10\.3 GB \/ 22\.5 GB\)$/);
   assert.match(lines[3], /^2 AGENTS\.md │ 6 MCPs │ 1 钩子/);
   assert.match(output, /✓ Shell ×20\n▸ Skills \(2\) 已选 superpowers:systematic-debugging, ponytail:ponytail\nMCPs \(2\)/);
-  assert.match(lines.at(-1), /^词元 9\.9M \(输入 678k, 输出 31k, 缓存 9\.2M\)$/);
+  assert.match(lines.at(-1), /^词元 9\.9M \(输入 678k, 输出 31k, 缓存 9\.2M\) │ 最近输出 ≈7\.7 tok\/s$/);
   const colored = renderActivity(previewActivity(), { color: true }).split('\n');
   const sgr = (tone, value) => `\u001b[${tone}m${value}\u001b[0m`;
   assert.deepEqual(colored[0].split(' │ ').slice(0, 3), [
@@ -193,6 +193,17 @@ test('a short interactive frame retains the header and reports hidden rows', () 
   assert.equal(renderActivity(snapshot, { width: 24, height: 1 }), full[0]);
 });
 
+test('shows a measured text output rate on the token row in the HUD and activity view', () => {
+  const snapshot = { id: thread.id, workspace: cwd, tokens: { total: 2400, output: 100 }, outputTokensPerSecond: 7.684 };
+  for (const embedded of [false, true]) {
+    assert.match(renderActivity(snapshot, { embedded }), /^词元 2\.4k \(输出 100\) │ 最近输出 ≈7\.7 tok\/s$/m);
+    const narrow = renderActivity(snapshot, { embedded, width: 25 });
+    assert.match(narrow, /^最近输出 ≈7\.7 tok\/s$/m);
+    assert.doesNotMatch(renderActivity({ ...snapshot, outputTokensPerSecond: 0 }, { embedded }), /tok\/s/);
+  }
+  assert.match(renderActivity({ ...snapshot, tokens: undefined }), /^最近输出 ≈7\.7 tok\/s$/m);
+});
+
 test('grouped quotas show remaining meters, omit invalid or expired data, and preserve activity on small screens', () => {
   const now = 1795000000;
   const snapshot = {
@@ -214,6 +225,7 @@ test('grouped quotas show remaining meters, omit invalid or expired data, and pr
   assert.doesNotMatch(view(), /Expired|Empty|Google|Claude|Argon/u);
   assert.match(view({ color: true }), /\u001b\[94m█{6}\u001b\[0m[\s\S]*\u001b\[31;2m░{6}\u001b\[0m/u);
   assert.equal(view({ height: 5 }), renderActivity({ ...snapshot, quotaGroups: undefined }, { embedded: true, now, height: 5 }));
+  assert.match(view({ width: 24 }), /^Codex 5h .*100% \(1h 0m\)$/m);
   assert.match(view({ width: 18 }), /^Codex 5h .*100%\nCodex 7d .*0%\nSpark 2h .*99\.99%$/m);
   assert.ok(view({ width: 18 }).split('\n').every(line => [...line].reduce((width, char) => width + (/\p{Script=Han}/u.test(char) ? 2 : 1), 0) <= 18));
 });
@@ -358,6 +370,344 @@ test('an embedded active session shows verified tool, skill and recent agent row
   assert.doesNotMatch(later, /✓ recent|▸ 检查布局/);
 });
 
+test('child rows use distinct dispatches for the exact recipients and retain the latest task after completion', async t => {
+  const now = 1760007000;
+  t.mock.timers.enable({ apis: ['Date'], now: now * 1000 });
+  const start = name => ({
+    id: `${name}-start`, type: 'subAgentActivity', kind: 'started', agentThreadId: name,
+    agentPath: `/root/${name}`, model: 'gpt-child', reasoningEffort: 'high', startedAtMs: (now - 10) * 1000,
+  });
+  const dispatch = (id, tool, child, prompt, extra = {}) => ({
+    id, type: 'collabAgentToolCall', tool, senderThreadId: thread.id, receiverThreadIds: [child],
+    prompt, status: 'completed', model: null, reasoningEffort: null, agentsStates: {}, ...extra,
+  });
+  const opening = [
+    start('alpha'), dispatch('dispatch-alpha', 'spawnAgent', 'alpha', '检查启动入口', { agentsStates: { beta: { status: 'running' } } }),
+    start('beta'), dispatch('dispatch-beta', 'spawnAgent', 'beta', '核对额度窗口'),
+    dispatch('unrelated-sender', 'sendInput', 'alpha', 'wrong-sender', { senderThreadId: 'other-parent' }),
+    dispatch('message', 'sendMessage', 'alpha', 'ordinary-message'),
+    dispatch('failed', 'sendInput', 'alpha', 'failed-dispatch', { status: 'failed' }),
+  ];
+  let items = opening;
+  const client = {
+    async request(method) {
+      if (method === 'thread/read') return { thread: { ...thread, historyMode: 'legacy' } };
+      if (method === 'thread/turns/list') return { data: [{ ...turn, items }] };
+      return { data: [] };
+    },
+  };
+  const frame = async () => renderActivity(await readActivity(client, { threadId: thread.id }), { embedded: true, now });
+  const original = await frame();
+  assert.match(original, /^◐ alpha.*gpt-child ◑ high.*10s │ 任务 检查启动入口$/m);
+  assert.match(original, /^◐ beta.*10s │ 任务 核对额度窗口$/m);
+  assert.doesNotMatch(original, /wrong-sender|ordinary-message|failed-dispatch/);
+
+  items = [
+    ...opening,
+    dispatch('follow-up-beta', 'sendInput', 'beta', '复核周额度'),
+    dispatch('follow-up-alpha', 'followupTask', 'alpha', '验证导出结果'),
+    {
+      id: 'alpha-end', type: 'subAgentActivity', kind: 'completed',
+      agentThreadId: 'alpha', agentPath: '/root/alpha', completedAtMs: (now - 1) * 1000,
+    },
+    dispatch('outcome', 'wait', 'alpha', 'wait-result', {
+      agentsStates: { alpha: { status: 'completed', message: 'completion-message' } },
+    }),
+  ];
+  const updated = await frame();
+  assert.match(updated, /^✓ alpha.*gpt-child ◑ high.*9s │ 任务 验证导出结果$/m);
+  assert.match(updated, /^◐ beta.*10s │ 任务 复核周额度$/m);
+  assert.doesNotMatch(updated, /检查启动入口|核对额度窗口|wait-result|completion-message/);
+  items = opening;
+  assert.match(await frame(), /^✓ alpha.*任务 验证导出结果$/m);
+});
+
+for (const [scenario, prompt] of [['empty', null], ['sealed', 'a'.repeat(90)], ['unpublished', undefined]]) {
+  test(`a new child run replaces the old task in warm and cold HUDs when the assignment is ${scenario}`, async t => {
+    const now = 1760007000;
+    const base = now * 1000;
+    t.mock.timers.enable({ apis: ['Date'], now: base });
+    const child = { id: 'reused', parentThreadId: thread.id, status: { type: 'notLoaded' }, updatedAt: now };
+    const dispatch = (id, tool, prompt, ms) => ({
+      item: {
+        id, type: 'collabAgentToolCall', tool, prompt, status: 'completed', senderThreadId: thread.id,
+        receiverThreadIds: [child.id], agentsStates: {},
+      },
+      completedAtMs: ms,
+    });
+    const event = (id, kind, ms) => ({
+      item: { id, type: 'subAgentActivity', kind, agentThreadId: child.id, agentPath: '/root/reused' },
+      [kind === 'started' ? 'startedAtMs' : 'completedAtMs']: ms,
+    });
+    let parentItems = [
+      dispatch('original-task', 'spawnAgent', '核对旧版脚本', base - 10_050),
+      event('first-start', 'started', base - 10_000),
+      event('first-finish', 'completed', base - 500),
+    ];
+    let childTurn = { id: 'first-child-turn', status: 'completed', startedAt: now - 10, completedAt: now - 1 };
+    const itemReads = [];
+    const client = {
+      async request(method, params) {
+        if (method === 'thread/read') return { thread };
+        if (method === 'thread/list') return { data: [child] };
+        if (method === 'thread/turns/list') return { data: [params.threadId === child.id ? childTurn : turn] };
+        if (method === 'thread/items/list' && params.threadId === thread.id) return { data: parentItems.toReversed() };
+        if (method === 'thread/items/list') {
+          itemReads.push(params.turnId);
+          return { data: [{
+            turnId: childTurn.id,
+            item: { type: 'fileChange', id: 'new-file', status: 'completed', changes: [{ path: 'second.md' }] },
+          }] };
+        }
+        return { data: [] };
+      },
+    };
+    const frame = async (activityClient = client) => renderActivity(await readActivity(activityClient, { threadId: thread.id }),
+      { embedded: true, now: Date.now() / 1000 });
+    assert.match(await frame(), /^✓ reused.*任务 核对旧版脚本$/m);
+    assert.deepEqual(itemReads, []);
+
+    parentItems = [...parentItems, event('second-start', 'started', base + 1050),
+      ...(prompt === undefined ? [] : [dispatch('next-task', 'followupTask', prompt, base + 1100)]),
+      dispatch('out-of-order-old-task', 'sendInput', '乱序旧派单', base - 1000),
+    ];
+    childTurn = { id: 'second-child-turn', status: 'interrupted', startedAt: now + 1, completedAt: null };
+    t.mock.timers.tick(5001);
+    const warm = await frame();
+    const cold = await frame({ ...client });
+    for (const output of [warm, cold]) {
+      assert.match(output, /^◐ reused.*最近活动 修改 second\.md$/m);
+      assert.doesNotMatch(output, /核对旧版脚本|乱序旧派单|a{64}/u);
+    }
+    assert.deepEqual(itemReads, ['second-child-turn', 'second-child-turn']);
+  });
+}
+
+test('a same-second child completion refreshes both empty and stale activity exactly once after the final turn settles', async t => {
+  const now = 1760007000;
+  t.mock.timers.enable({ apis: ['Date'], now: now * 1000 + 300 });
+  const children = ['empty', 'stale'].map(id => ({ id, parentThreadId: thread.id, status: { type: 'notLoaded' }, updatedAt: now }));
+  const event = (id, kind, ms) => ({
+    item: { id: `${id}-${kind}`, type: 'subAgentActivity', kind, agentThreadId: id, agentPath: `/root/${id}` },
+    [kind === 'started' ? 'startedAtMs' : 'completedAtMs']: now * 1000 + ms,
+  });
+  let parentItems = children.map(({ id }) => event(id, 'started', 100));
+  let finished = false;
+  const itemReads = [];
+  const client = {
+    async request(method, params) {
+      if (method === 'thread/read') return { thread };
+      if (method === 'thread/list') return { data: children };
+      if (method === 'thread/turns/list') return { data: [params.threadId === thread.id ? turn : {
+        id: `${params.threadId}-turn`, status: finished ? 'completed' : 'interrupted', startedAt: now, completedAt: finished ? now : null,
+      }] };
+      if (method === 'thread/items/list' && params.threadId === thread.id) return { data: parentItems.toReversed() };
+      if (method === 'thread/items/list') {
+        itemReads.push(params.turnId);
+        const path = finished ? `${params.threadId}-final.md` : params.threadId === 'stale' ? 'draft.md' : undefined;
+        return { data: path ? [{
+          turnId: params.turnId, item: { id: 'file', type: 'fileChange', status: 'completed', changes: [{ path }] },
+        }] : [] };
+      }
+      return { data: [] };
+    },
+  };
+  const frame = async (activityClient = client) => renderActivity(await readActivity(activityClient, { threadId: thread.id }),
+    { embedded: true, now: Date.now() / 1000 });
+  const active = await frame();
+  assert.match(active, /^◐ stale.*修改 draft\.md$/m);
+  assert.match(active, /^◐ empty(?!.*最近活动).*$/m);
+  parentItems = [...parentItems, ...children.map(({ id }) => event(id, 'completed', 800))];
+  finished = true;
+  t.mock.timers.tick(5001);
+  const warm = await frame();
+  const cold = await frame({ ...client });
+  for (const output of [warm, cold]) {
+    assert.match(output, /^✓ empty.*修改 empty-final\.md$/m);
+    assert.match(output, /^✓ stale.*修改 stale-final\.md$/m);
+    assert.doesNotMatch(output, /draft\.md/u);
+  }
+  t.mock.timers.tick(17000);
+  assert.match(await frame(), /^✓ stale.*修改 stale-final\.md$/m);
+  assert.deepEqual(itemReads.toSorted(), ['empty-turn', 'empty-turn', 'empty-turn', 'stale-turn', 'stale-turn', 'stale-turn']);
+});
+
+test('a cold HUD recovers a running child task from an older parent turn when recent messages only establish its status', async t => {
+  const now = 1760007000;
+  t.mock.timers.enable({ apis: ['Date'], now: now * 1000 });
+  const child = { id: 'recover-task', parentThreadId: thread.id, agentNickname: 'worker', status: { type: 'notLoaded' }, updatedAt: now };
+  const dispatch = (id, tool, prompt) => ({
+    item: {
+      id, type: 'collabAgentToolCall', tool, prompt, status: 'completed', senderThreadId: thread.id,
+      receiverThreadIds: [child.id], agentsStates: { [child.id]: { status: 'running' } },
+    },
+  });
+  const opening = dispatch('original-task', 'spawnAgent', '核对入口');
+  const later = dispatch('sender-status', 'sendMessage', '普通消息');
+  const start = (id, at) => ({
+    item: { id, type: 'subAgentActivity', kind: 'started', agentThreadId: child.id, agentPath: '/root/worker' },
+    startedAtMs: at * 1000,
+  });
+  let currentTurn = { ...turn, id: 'dispatch-turn' };
+  let restarted = false;
+  const cursors = [];
+  const client = {
+    async request(method, params) {
+      if (method === 'thread/read') return { thread };
+      if (method === 'thread/list') return { data: [child] };
+      if (method === 'thread/turns/list') {
+        if (params.threadId === child.id) return { data: [restarted
+          ? { id: 'next-child-turn', status: 'interrupted', startedAt: now + 11, completedAt: null }
+          : { id: 'child-turn', status: 'interrupted', startedAt: now - 10, completedAt: null }] };
+        if (params.cursor === 'prior') {
+          cursors.push(params.cursor);
+          return { data: [{ ...turn, id: 'dispatch-turn' }] };
+        }
+        return { data: [currentTurn], nextCursor: currentTurn === turn ? 'prior' : undefined };
+      }
+      if (method === 'thread/items/list' && params.threadId === thread.id) {
+        if (params.turnId === 'dispatch-turn') return { data: [start('first-start', now - 10), opening] };
+        return { data: restarted ? [start('next-start', now + 11), later] : [later] };
+      }
+      return { data: [] };
+    },
+  };
+  const frame = async activityClient => renderActivity(await readActivity(activityClient, { threadId: thread.id }),
+    { embedded: true, now: Date.now() / 1000 });
+  assert.match(await frame(client), /任务 核对入口/u);
+  currentTurn = turn;
+  t.mock.timers.tick(5001);
+  assert.match(await frame(client), /任务 核对入口/u);
+  const freshClient = { ...client };
+  assert.match(await frame(freshClient), /任务 核对入口/u);
+  t.mock.timers.tick(5001);
+  assert.match(await frame(freshClient), /任务 核对入口/u);
+  restarted = true;
+  t.mock.timers.tick(5001);
+  const next = await frame(freshClient);
+  assert.match(next, /^◐ worker/m);
+  assert.doesNotMatch(next, /任务 核对入口/u);
+  assert.deepEqual(cursors, ['prior']);
+});
+
+test('v2 child rows show evidence from visible child turns and reuse unchanged activity', async t => {
+  const now = 1760007000;
+  t.mock.timers.enable({ apis: ['Date'], now: now * 1000 });
+  const children = ['hidden', 'left', 'right', 'settled'].map(id => ({
+    id, parentThreadId: thread.id, historyMode: 'paginated', status: { type: 'notLoaded' },
+    updatedAt: now - 1, preview: 'inherited-thread-preview',
+  }));
+  let starts = children.map(({ id }) => ({
+    item: { id: `${id}-start`, type: 'subAgentActivity', kind: 'started', agentThreadId: id, agentPath: `/root/${id}` },
+    startedAtMs: (now - 10) * 1000,
+  }));
+  // The running limit hides the oldest child. A recently finished child reenters once slots open.
+  const settled = {
+    item: { id: 'settled-end', type: 'subAgentActivity', kind: 'completed', agentThreadId: 'settled' },
+    completedAtMs: (now - 1) * 1000,
+  };
+  const childTurns = new Map(children.map(({ id }) => [id, {
+    id: `${id}-turn`, status: 'interrupted', startedAt: now - 10, completedAt: null,
+  }]));
+  const entries = (items, turnId) => items.map(item => ({ item, turnId }));
+  const itemsByChild = new Map([
+    ['left', [
+      ...Array.from({ length: 13 }, (_, index) => ({ id: `thought-${index}`, type: 'reasoning', summary: ['private-reasoning'] })),
+      { id: 'msg', type: 'agentMessage', text: 'ordinary-final-answer' },
+      { id: 'cmd', type: 'commandExecution', command: 'raw-command', status: 'completed', aggregatedOutput: 'raw-output',
+        commandActions: [{ type: 'unknown', command: 'raw-action' }] },
+      { id: 'read', type: 'commandExecution', command: 'raw-read', status: 'completed',
+        commandActions: [{ type: 'read', name: 'terminal-host.mjs', path: '/private/root/terminal-host.mjs' }] },
+      { id: 'inherited', type: 'userMessage', content: [{ type: 'text', text: 'inherited-user-prompt' }] },
+    ]],
+    ['right', [{
+      id: 'edit', type: 'fileChange', status: 'completed',
+      changes: [{ path: 'C:\\private\\activity.mjs', diff: 'private-diff', kind: { type: 'update' } }],
+    }]],
+    ['settled', [{ id: 'plan', type: 'plan', text: '核对状态栏布局\n计划细节不进入 HUD' }]],
+  ]);
+  const itemReads = [];
+  const client = {
+    async request(method, params) {
+      if (method === 'thread/read') return { thread };
+      if (method === 'thread/list') return { data: children };
+      if (method === 'thread/turns/list') return { data: [childTurns.get(params.threadId) ?? turn] };
+      if (method === 'thread/items/list' && params.threadId === thread.id) return { data: starts.toReversed() };
+      if (method === 'thread/items/list') {
+        itemReads.push(params.threadId);
+        assert.equal(params.turnId, childTurns.get(params.threadId).id);
+        assert.equal(params.sortDirection, 'desc');
+        assert.equal(params.deferOutput.commandExecution, true);
+        assert.ok(params.limit <= 24);
+        return { data: entries((itemsByChild.get(params.threadId) ?? []).slice(0, params.limit), params.turnId) };
+      }
+      return {};
+    },
+  };
+  const frame = async () => renderActivity(await readActivity(client, { threadId: thread.id }),
+    { now: Date.now() / 1000, embedded: true });
+  const running = await frame();
+  assert.match(running, /^◐ left.*最近活动 读取 terminal-host\.mjs$/m);
+  assert.match(running, /^◐ right.*最近活动 修改 activity\.mjs$/m);
+  assert.doesNotMatch(running, /hidden|raw-|private-|inherited-|ordinary-final-answer/);
+  assert.deepEqual(itemReads.toSorted(), ['left', 'right', 'settled']);
+
+  t.mock.timers.tick(5001);
+  assert.match(await frame(), /^◐ left.*读取 terminal-host\.mjs$/m);
+  assert.equal(itemReads.length, 3);
+
+  starts = [...starts, {
+    item: { id: 'hidden-end', type: 'subAgentActivity', kind: 'completed', agentThreadId: 'hidden' },
+    completedAtMs: (now - 2) * 1000,
+  }, settled, {
+    item: { id: 'left-restart', type: 'subAgentActivity', kind: 'started', agentThreadId: 'left', agentPath: '/root/left' },
+    startedAtMs: now * 1000 + 5500,
+  }];
+  t.mock.timers.tick(5001);
+  const restarted = await frame();
+  assert.match(restarted, /^◐ left/m);
+  assert.doesNotMatch(restarted, /读取 terminal-host\.mjs/u);
+  assert.match(restarted, /^✓ settled.*最近活动 计划 核对状态栏布局$/m);
+  assert.doesNotMatch(restarted, /计划细节/u);
+});
+
+test('child notes stay on their metadata row and clip different-width characters safely', () => {
+  const now = 1760007000;
+  const activity = {
+    id: thread.id, agents: [{
+      name: 'worker', status: 'running', startedAtMs: (now - 10) * 1000,
+      task: '\u001b[31m验证\u001b[0m\u202e\t布局' + '详情'.repeat(90) + '\nsecond-line',
+    }],
+  };
+  const wide = renderActivity(activity, { now, embedded: true });
+  const narrow = stripVTControlCharacters(renderActivity(activity, { now, width: 48, color: true, embedded: true }));
+  assert.match(wide, /^◐ worker │ 进行中 │ 10s │ 任务 验证 布局[详情]+…$/m);
+  assert.match(narrow, /^◐ worker │ 进行中 │ 10s │ 任务 验证 布局[详情]*…$/m);
+  assert.doesNotMatch(wide + narrow, /second-line|\u202e|\u001b/u);
+  assert.ok(narrow.split('\n').every(line => [...line].reduce((cells, part) => cells + (/\p{Script=Han}/u.test(part) ? 2 : 1), 0) <= 48));
+});
+
+test('child notes continue below tight metadata without taking another agent slot', () => {
+  const now = 1760007000;
+  const activity = {
+    id: thread.id,
+    agents: [{
+      name: 'reviewer', model: 'gpt-6.2-astra', reasoning: 'max', status: 'running',
+      startedAtMs: (now - 10) * 1000, task: '核对启动入口和终端布局',
+    }],
+  };
+  const frame = (width, height) => renderActivity(activity, { now, width, height, embedded: true });
+  for (const width of [42, 51, 76]) {
+    const output = frame(width, 4);
+    assert.match(output, /◐ reviewer.*gpt-6\.2-astra ● max/);
+    assert.match(output, /进行中[\s\S]*10s[\s\S]*任务 核对启动/u);
+    assert.equal(output.match(/◐/gu).length, 1);
+    assert.ok(output.split('\n').every(line => [...line].reduce((cells, part) => cells + (/\p{Script=Han}/u.test(part) ? 2 : 1), 0) <= width));
+  }
+  assert.match(frame(55, 4), /进行中 │ 10s\n  任务 核对启动入口和终端布局$/u);
+  assert.match(frame(55, 1), /◐ reviewer.*进行中 │ 10s$/u);
+});
+
 test('a running child survives a long parent turn and the next parent turn until confirmed finished', async t => {
   const now = 1760007000;
   t.mock.timers.enable({ apis: ['Date'], now: now * 1000 });
@@ -423,6 +773,7 @@ test('a cold HUD recovers child evidence from its exact parent without marking u
   const unknown = child(thread, 'unloaded-without-evidence');
   const active = child(other, 'reported-active', 'active');
   const reads = new Set();
+  let followedUp = false;
   const client = {
     async request(method, params) {
       if (method === 'thread/read') return { thread: params.threadId === thread.id ? thread : other };
@@ -440,7 +791,18 @@ test('a cold HUD recovers child evidence from its exact parent without marking u
       }
       if (method === 'thread/items/list' && params.threadId === thread.id && params.turnId === 'earlier-turn') {
         return { data: [{ item: {
+          type: 'collabAgentToolCall', id: 'earlier-dispatch', status: 'completed', tool: 'spawnAgent',
+          senderThreadId: thread.id, receiverThreadIds: ['unrelated-child', known.id],
+          prompt: '检查旧版会话恢复', model: null, reasoningEffort: null, agentsStates: {},
+        } }, { item: {
           type: 'subAgentActivity', id: 'earlier-start', kind: 'started', agentThreadId: known.id, agentPath: '/root/from-prior-turn',
+        } }] };
+      }
+      if (method === 'thread/items/list' && followedUp && params.threadId === thread.id && params.turnId === turn.id) {
+        return { data: [{ item: {
+          type: 'collabAgentToolCall', id: 'new-dispatch', status: 'completed', tool: 'followupTask',
+          senderThreadId: thread.id, receiverThreadIds: [known.id],
+          prompt: '检查新任务恢复', model: null, reasoningEffort: null, agentsStates: {},
         } }] };
       }
       return { data: [] };
@@ -448,11 +810,15 @@ test('a cold HUD recovers child evidence from its exact parent without marking u
   };
   const render = async parent => renderActivity(await readActivity(client, { threadId: parent.id }), { embedded: true });
   const [first, second] = await Promise.all([render(thread), render(other)]);
-  assert.match(first, /◐ from-prior-turn/u);
+  assert.match(first, /◐ from-prior-turn.*任务 检查旧版会话恢复/u);
   assert.doesNotMatch(first, /reported-active|unloaded-without-evidence/u);
   assert.match(second, /◐ reported-active/u);
-  assert.doesNotMatch(second, /from-prior-turn|unloaded-without-evidence/u);
+  assert.doesNotMatch(second, /from-prior-turn|unloaded-without-evidence|检查旧版会话恢复/u);
   assert.deepEqual(reads, new Set([thread.id, other.id]));
+  followedUp = true;
+  const fresh = renderActivity(await readActivity({ ...client }, { threadId: thread.id }), { embedded: true });
+  assert.match(fresh, /◐ from-prior-turn.*任务 检查新任务恢复/u);
+  assert.doesNotMatch(fresh, /检查旧版会话恢复/u);
 });
 
 test('the cold child scan continues from older turn cursors and stops once it finds evidence', async t => {

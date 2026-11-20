@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTick } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 import test from 'node:test';
 import { createLaunchHud, interactiveOptions } from '../lib/launch.mjs';
 import { runCli } from './run-cli.mjs';
@@ -129,6 +130,39 @@ test('an unavailable PTY dependency falls back before changing Codex arguments o
   assert.doesNotMatch(failure.output, /launching Codex directly/u);
 });
 
+test('the initial HUD renders local and native fields synchronously without starting a connection', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-hub initial '));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const cwd = join(root, 'fixture workspace');
+  await mkdir(cwd);
+  const connection = Promise.withResolvers();
+  let connectionAttempts = 0;
+  const hud = createLaunchHud({ cwd, color: false, connect() {
+    connectionAttempts++;
+    return connection.promise;
+  } });
+  t.after(hud.close);
+  const dimensions = { columns: 100, rows: 12 };
+  const first = hud.initialHud?.(dimensions);
+  assert.equal(typeof first, 'string');
+  assert.match(first, /^fixture workspace\n内存 [^\n]+$/u);
+  assert.doesNotMatch(first, /\u001b/u);
+  await nextTick();
+  assert.equal(connectionAttempts, 0);
+
+  const native = {
+    ...dimensions, threadId: firstThread, model: 'gpt-live', reasoning: 'high', contextPercent: 0, version: '0.170.0',
+    limits: { fiveHour: { remainingPercent: 80 } }, taskProgress: { completed: 1, total: 2 },
+  };
+  const refresh = hud.readHud(native);
+  await nextTick();
+  assert.equal(connectionAttempts, 1);
+  const pending = hud.initialHud(native);
+  assert.match(pending, /^\[gpt-live ◑ high\].*fixture workspace.*Codex v0\.170\.0\n上下文 .*0% │ 5h 剩余 80%\n内存 [^\n]+\n▸ 任务进度 \(1\/2\)$/u);
+  connection.resolve({ close() {} });
+  await refresh;
+});
+
 test('the HUD presents live data before initialization and only reads the currently visible thread', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'codex-hub isolated launch '));
   t.after(() => rm(cwd, { force: true, recursive: true }));
@@ -167,6 +201,9 @@ test('the HUD presents live data before initialization and only reads the curren
   const session = new AbortController();
   const oldFrame = hud.readHud({ ...native, threadId: firstThread, signal: session.signal });
   session.abort();
+  const initial = hud.initialHud({ ...native, threadId: secondThread });
+  assert.match(initial, /上下文 .*0%/u);
+  assert.doesNotMatch(initial, /37%|✓ Shell/u);
   const switched = await hud.readHud({ ...native, threadId: secondThread });
   assert.match(switched, /上下文 .*0%/u);
   assert.doesNotMatch(switched, /37%|✓ Shell|暂无/u);
@@ -192,6 +229,50 @@ test('closing the HUD during initialization closes a late connection', async () 
   connection.resolve({ close() { closed++; } });
   await nextTick();
   assert.equal(closed, 1);
+});
+
+test('the native weekly quota keeps a matching reset time and follows the clock while idle', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub weekly quota '));
+  t.after(() => rm(cwd, { force: true, recursive: true }));
+  const sessions = join(cwd, 'sessions');
+  await mkdir(sessions);
+  const path = join(sessions, `rollout-fixture-${firstThread}.jsonl`);
+  const meta = JSON.stringify({ type: 'session_meta', payload: { id: firstThread } });
+  let now = 1795000000;
+  t.mock.method(Date, 'now', () => now * 1000);
+  const reset = now + 2 * 86400 + 3 * 3600 + 5 * 60 + 1;
+  const writeQuota = limit_id => writeFile(path, `${meta}\n${JSON.stringify({ type: 'event_msg', payload: {
+    type: 'token_count', info: null,
+    rate_limits: { limit_id, secondary: { used_percent: 93, window_minutes: 10_080, resets_at: reset } },
+  } })}\n`);
+  await writeQuota('codex');
+  const hud = createLaunchHud({ cwd, home: cwd, connect: async () => ({
+    close() {},
+    async request(method) {
+      if (method === 'thread/read') return { thread: { id: firstThread, cwd, path } };
+      if (method === 'config/read') return { config: { project_doc_max_bytes: 0 } };
+      return { data: [] };
+    },
+  }) });
+  t.after(hud.close);
+  const native = { threadId: firstThread, limits: { weekly: { remainingPercent: 90 } } };
+  const frame = async (input = native) => stripVTControlCharacters(await hud.readHud(input));
+  await frame();
+  await nextTick();
+  const initial = await hud.readHud(native);
+  assert.match(initial, /\u001b\[94m90%\u001b\[0m/u);
+  assert.match(stripVTControlCharacters(initial), /7d 剩余 90% \(2d 3h 6m\)/u);
+  now++;
+  assert.match(await frame(), /7d 剩余 90% \(2d 3h 5m\)/u);
+  await writeQuota('spark');
+  assert.match(await frame(), /7d 剩余 90%\n/u);
+  assert.match(await frame({ threadId: firstThread }), /7d 剩余 7% \(2d 3h 5m\)/u);
+  await writeQuota();
+  assert.match(await frame(), /7d 剩余 90% \(2d 3h 5m\)/u);
+  now = reset - 1;
+  assert.match(await frame(), /7d 剩余 90% \(1m\)/u);
+  now = reset;
+  assert.match(await frame(), /7d 剩余 90%\n/u);
 });
 
 test('the interactive footer cannot relabel another account quota or leak it to a custom provider', async t => {

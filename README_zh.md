@@ -64,7 +64,7 @@ Bash 和 Zsh 的在线命令会为运行它的 shell 配置启动入口。Window
 
 Codex CLI 0.170.0 对带命令行界面覆盖的会话使用内嵌的 app-server。若本次需要沿用原有的共享后台服务器设置，可在 Bash 或 Zsh 运行 `CODEX_HUB_BYPASS=1 codex`，或在 PowerShell 运行 `& (Get-Command codex -CommandType Application | Select-Object -First 1).Source`。
 
-基础行显示当前模型与推理档位、工作区与 Git 分支、Codex 版本、上下文用量和系统内存。终端支持 OSC 8 时，可点击工作区名称打开本地目录。内存取自 Codex 所处环境，例如 WSL。记录用量后会出现词元行，有数据时区分非缓存输入、输出和缓存输入。符合条件的企业会话在 Codex 提供估算费用时会显示该值。
+基础行显示当前模型与推理档位、工作区与 Git 分支、Codex 版本、上下文用量和系统内存。终端支持 OSC 8 时，可点击工作区名称打开本地目录。内存取自 Codex 所处环境，例如 WSL。记录用量后会出现词元行，有数据时区分非缓存输入、输出和缓存输入。当前回合的一条文本响应完成并记下可配对的用量和时段后，词元行会显示最近输出速率（`tok/s`），按文本输出耗时估算，扣除推理词元。符合条件的企业会话在 Codex 提供估算费用时会显示该值。
 
 使用官方 OpenAI 提供方的会话会显示本机 Codex app-server 返回的额度分组。只有一组时，额度仍放在上下文旁边。多组额度显示在活动行下方，标出组名，进度条按剩余比例填充、按已用比例着色。有重置时间时显示倒计时。账户额度不可用时，使用会话记录或原生状态栏中已有的额度。截图来自 WSL 中实际运行的 Codex CLI，额度使用符合官方格式的受控响应。[分组额度示例](docs/hud-quotas.png)
 
@@ -73,7 +73,7 @@ Codex CLI 0.170.0 对带命令行界面覆盖的会话使用内嵌的 app-server
 *图为同一 Codex CLI 实际运行画面，子代理事件与 23% 上下文来自受控的本机会话记录。*
 
 - 工具和 MCP 活动取自最近一轮。每个 MCP 服务器只出现一次，有失败会标记。Skills 行显示 Codex 明确记录的已选技能。
-- 子代理优先显示运行中的，最多三项。其中最多两项可以是近 60 秒内结束的代理。名字、模型、推理档位和耗时取自已有的代理事件。
+- 子代理优先显示运行中的，最多三项。其中最多两项可以是近 60 秒内结束的代理。名字、模型、推理档位和耗时取自已有的代理事件。有明确派单记录时，子代理行会显示简短任务。缺少派单正文时，会显示可查到的子会话最近活动。
 - 任务行采用原生状态栏中 `update_plan` 的进度计数。环境行统计生效的 `AGENTS.md`、已启用的 MCP 服务器和钩子，以及本地 app-server 返回的内联 `[agents.<name>]` 角色。命名配置档可能使环境计数不可用。没有数据的字段和空活动行会省略。
 
 多行布局参考了 Claude HUD，以及 agy-hud 对齐样式和启用完整面板的改动。[Claude HUD](https://github.com/jarrodwatts/claude-hud) · [agy-hud 对齐提交](https://github.com/yuwenlong/agy-hud/commit/3a585b5376f42685d8a21f83342ceb34f0f76d10) · [agy-hud 完整面板提交](https://github.com/yuwenlong/agy-hud/commit/54c25a60950bb0717910492d37af0fa53384b3dc)

@@ -3,6 +3,7 @@ import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { readActivity } from '../lib/activity.mjs';
 import { readHudMetrics } from '../lib/hud-metrics.mjs';
 
 const id = '1d6c11c9-f1c6-4d02-ae28-a8748071da01';
@@ -43,6 +44,106 @@ test('reports local context and cumulative token usage without waiting for a mod
   assert.deepEqual(metrics.limits, { fiveHour: { remainingPercent: 64.5, usedPercent: 35.5, resetsAt } });
   assert.ok(metrics.memory.total > 0);
   assert.ok(metrics.memory.used >= 0 && metrics.memory.used <= metrics.memory.total);
+});
+
+const rateEpoch = Date.UTC(2026, 10, 18, 19, 10);
+const rateRecord = (time, type, payload) => JSON.stringify({ timestamp: new Date(rateEpoch + time).toISOString(), type, payload });
+const rateEvent = (time, type, payload) => rateRecord(time, 'event_msg', { type, ...payload });
+
+function timedReply(turnId, { start = 10_000, end = 11_000, messageId = 'msg-final', threadId = id } = {}) {
+  const text = 'Fixture answer';
+  return [rateEvent(end, 'item_completed', {
+    turn_id: turnId, thread_id: threadId, started_at_ms: rateEpoch + start, completed_at_ms: rateEpoch + end,
+    item: { type: 'AgentMessage', id: messageId, content: [{ type: 'Text', text }] },
+  }), rateRecord(end + 1, 'response_item', {
+    type: 'message', role: 'assistant', status: 'completed', id: messageId, content: [{ type: 'output_text', text }],
+    internal_chat_message_metadata_passthrough: { turn_id: turnId },
+  })];
+}
+
+function responseUsage(turnId, { responseId = 'resp-final', start = 11_005, output = 50, reasoning = 10 } = {}) {
+  return rateRecord(start, 'token_usage_record', {
+    thread_id: id, turn_id: turnId, response_id: responseId,
+    usage: { input_tokens: 1800, cached_input_tokens: 1000, output_tokens: output, reasoning_output_tokens: reasoning },
+    turn_token_usage: { output_tokens: 560 }, thread_token_usage: { output_tokens: 8000 },
+  });
+}
+
+test('measures the final text response using its own output and item duration after a tool wait', async t => {
+  const { cwd, home, path } = await fixture(t);
+  const turnId = 'turn-1';
+  const thread = { id, path, cwd };
+  const opts = { cwd, home };
+  const activity = latestId => readActivity({
+    async request(method) {
+      if (method === 'thread/read') return { thread };
+      if (method === 'thread/turns/list') return { data: [{ id: latestId, status: 'completed' }] };
+      return { data: [] };
+    },
+  }, { ...opts, threadId: id });
+  const records = [meta, rateEvent(0, 'task_started', { turn_id: turnId }),
+    ...timedReply(turnId, { start: 100, end: 200, messageId: 'msg-commentary' }),
+    rateRecord(205, 'response_item', { type: 'function_call' }),
+    responseUsage(turnId, { responseId: 'resp-tool', start: 208, output: 510, reasoning: 0 }),
+    rateRecord(9500, 'response_item', { type: 'function_call_output' }),
+    tokenEvent({ total_token_usage: { output_tokens: 7950 } }, null),
+    rateRecord(9505, 'response_item', { type: 'agent_message', author: 'worker', recipient: 'parent',
+      content: [{ type: 'input_text', text: 'Fixture context' }] }),
+    rateRecord(9600, 'response_item', { type: 'reasoning' }),
+    ...timedReply(turnId), responseUsage(turnId),
+    tokenEvent({ total_token_usage: { output_tokens: 8000 } }, null),
+    rateEvent(11_300, 'task_complete', { turn_id: turnId, duration_ms: 11_300, time_to_first_token_ms: 100 }), ''];
+  await writeFile(path, records.join('\n'));
+
+  const expected = { turnId, tokensPerSecond: 40 };
+  const sample = await readHudMetrics(null, thread, opts);
+  assert.equal(sample.tokens.output, 8000);
+  assert.deepEqual(sample.outputRate, expected);
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, expected);
+  assert.equal((await activity(turnId)).outputTokensPerSecond, 40);
+  assert.equal((await activity('turn-2')).outputTokensPerSecond, undefined);
+
+  const next = 'turn-2';
+  await appendFile(path, [rateEvent(12_000, 'task_started', { turn_id: next }),
+    rateRecord(12_001, 'response_item', { type: 'additional_tools', role: 'developer', tools: [] }), ''].join('\n'));
+  assert.equal((await readHudMetrics(null, thread, opts)).outputRate, undefined);
+  await appendFile(path, [...timedReply(next, { start: 12_500, end: 13_250 }), ''].join('\n'));
+  assert.equal((await readHudMetrics(null, thread, opts)).outputRate, undefined);
+  await appendFile(path, responseUsage(next, { start: 13_255, output: 6, reasoning: 0 }) + '\n');
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, { turnId: next, tokensPerSecond: 8 });
+});
+
+test('omits output rates for incomplete, mixed, and uncorrelated response records', async t => {
+  const { cwd, home, path } = await fixture(t);
+  const turnId = 'turn-1';
+  const reply = timedReply(turnId);
+  const usage = responseUsage(turnId);
+  const tool = rateRecord(9700, 'response_item', { type: 'function_call' });
+  const aborted = rateEvent(12_000, 'turn_aborted', { turn_id: turnId });
+  const cases = [
+    ['aggregated usage only', ...reply, tokenEvent({ total_token_usage: { output_tokens: 50 } }, null)],
+    ['mixed tool call', tool, ...reply, usage],
+    ['multiple assistant items', ...timedReply(turnId, { start: 8500, end: 9000, messageId: 'msg-first' }), ...reply, usage],
+    ['later usage with no matching text', ...reply, tokenEvent({ total_token_usage: { output_tokens: 50 } }, null), usage],
+    ['later reasoning response', ...reply, rateRecord(11_003, 'response_item', { type: 'reasoning' }), usage],
+    ['duplicate usage', ...reply, usage, usage],
+    ['missing message', usage],
+    ['invalid receipt timestamp', ...reply, JSON.stringify({ ...JSON.parse(usage), timestamp: { toString: null } })],
+    ['latest receipt missing payload', ...reply, usage, rateRecord(12_000, 'token_usage_record', null)],
+    ['untimed message', ...timedReply(turnId, { start: 11_000 }), usage],
+    ['no text tokens', ...reply, responseUsage(turnId, { output: 10 })],
+    ['incorrect thread', ...timedReply(turnId, { threadId: 'other' }), usage],
+    ['incorrect turn', ...reply, responseUsage('other')],
+    ['later message missing usage', ...reply, usage, ...timedReply(turnId, { start: 12_000, end: 12_500 })],
+    ['aborted turn', ...reply, usage, aborted],
+  ];
+  for (const [name, ...records] of cases) {
+    const cumulative = tokenEvent({ total_token_usage: { output_tokens: 8000 } }, null);
+    await writeFile(path, [meta, rateEvent(0, 'task_started', { turn_id: turnId }), ...records, cumulative, ''].join('\n'));
+    const metrics = await readHudMetrics(null, { id, path }, { cwd, home });
+    assert.equal(metrics.outputRate, undefined, name);
+    assert.equal(metrics.tokens?.output, 8000, name);
+  }
 });
 
 test('rounds the context percentage like the native Codex footer', async t => {
