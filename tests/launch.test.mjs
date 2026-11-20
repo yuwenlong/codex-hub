@@ -17,12 +17,15 @@ const require = createRequire(import.meta.url);
 
 test('launch distinguishes interactive arguments from native commands and display overrides', () => {
   const cwd = process.cwd();
-  for (const args of [[], ['resume', '--last'], ['fork', firstThread], ['--', 'exec'], ['Use the default model'], ['-mquiet', 'resume']]) {
+  for (const args of [[], ['--', 'exec'], ['Use the default model'], ['Use the default model', 'resume']]) {
     assert.deepEqual(interactiveOptions(args, cwd), { workspace: cwd, configArgs: [] }, JSON.stringify(args));
+  }
+  for (const args of [['resume', '--last'], ['fork', firstThread], ['-mquiet', 'resume']]) {
+    assert.deepEqual(interactiveOptions(args, cwd), { workspace: cwd, configArgs: [], resumesThread: true }, JSON.stringify(args));
   }
   const args = ['--profile=team', '-C', 'workspace folder', 'resume', '-c', 'model_reasoning_effort="high"'];
   assert.deepEqual(interactiveOptions(args, cwd), {
-    workspace: join(cwd, 'workspace folder'), profile: 'team', configArgs: ['--config', 'model_reasoning_effort="high"'],
+    workspace: join(cwd, 'workspace folder'), profile: 'team', configArgs: ['--config', 'model_reasoning_effort="high"'], resumesThread: true,
   });
   for (const args of [
     ['exec', '--json', 'prompt'], ['-pteam', 'app-server'], ['--help'], ['resume', '-h'], ['-V'],
@@ -275,6 +278,174 @@ test('the native weekly quota keeps a matching reset time and follows the clock 
   assert.match(await frame(), /7d 剩余 90%\n/u);
 });
 
+test('a restored thread accepts both windows from the rollout registered under a different filename', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub rotated quota '));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const sessions = join(cwd, 'sessions');
+  await mkdir(sessions);
+  let path = join(sessions, 'rollout-2026-11-20T11-29-36-' + secondThread + '.jsonl');
+  let now = 1795000000;
+  t.mock.method(Date, 'now', () => now * 1000);
+  const quota = { limit_id: 'codex',
+    primary: { used_percent: 31, window_minutes: 10_080, resets_at: now + 241 },
+    secondary: { used_percent: 7, window_minutes: 300, resets_at: now + 61 },
+  };
+  const event = { type: 'event_msg', payload: { type: 'token_count', info: null, rate_limits: quota } };
+  const writeQuota = async payload => writeFile(path, [
+    { type: 'session_meta', payload }, event,
+  ].map(record => JSON.stringify(record)).join('\n') + '\n');
+  await writeQuota({ id: firstThread, session_id: firstThread });
+
+  const hud = createLaunchHud({ cwd, home: cwd, useAccountQuota: false, color: false, connect: async () => ({
+    close() {},
+    async request(method) {
+      if (method === 'thread/read') return { thread: { id: firstThread, cwd, path, modelProvider: 'openai' } };
+      return { data: [] };
+    },
+  }) });
+  t.after(hud.close);
+  const frame = () => hud.readHud({ threadId: firstThread, limits: {
+    fiveHour: { remainingPercent: 93 }, weekly: { remainingPercent: 69 },
+  } });
+  await frame();
+  await nextTick();
+  assert.match(await frame(), /5h 剩余 93% \(2m\) │ 7d 剩余 69% \(5m\)/u);
+  now += 61;
+  assert.match(await frame(), /5h 剩余 93% │ 7d 剩余 69% \(3m\)/u);
+  await writeQuota({ id: secondThread, session_id: firstThread });
+  assert.match(await frame(), /5h 剩余 93% │ 7d 剩余 69%\n/u);
+  await writeQuota({ session_id: firstThread });
+  assert.match(await frame(), /5h 剩余 93% │ 7d 剩余 69%\n/u);
+  path = join(sessions, 'rollout-2026-11-20T11-29-36-' + firstThread + '.jsonl');
+  await writeQuota({ session_id: firstThread });
+  assert.match(await frame(), /5h 剩余 93% │ 7d 剩余 69% \(3m\)/u);
+});
+
+test('a fresh official launch reads the account windows before the first message', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub cold quota '));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const start = 1795000000;
+  let now = start;
+  t.mock.method(Date, 'now', () => now * 1000);
+  const account = Promise.withResolvers();
+  let reads = 0;
+  const hud = createLaunchHud({ cwd, home: cwd, startsNewThread: true, color: false, connect: async () => ({
+    close() {},
+    async request(method, params) {
+      if (method === 'thread/read') throw Object.assign(new Error('Codex thread/read: thread not loaded: ' + params.threadId), { code: -32600 });
+      if (method === 'config/read') return { config: { model_provider: 'openai' } };
+      if (method === 'account/rateLimits/read') {
+        reads++;
+        return account.promise;
+      }
+      return { data: [] };
+    },
+  }) });
+  t.after(hud.close);
+  const frame = options => hud.readHud({ model: 'gpt-live', columns: 110, rows: 12, ...options });
+  const thread = { threadId: firstThread };
+  assert.doesNotMatch(await frame(), /5h 剩余|7d 剩余/u);
+  await nextTick();
+  assert.doesNotMatch(await frame(thread), /5h 剩余|7d 剩余/u);
+  account.resolve({ rateLimitsByLimitId: {
+    codex: { limitId: 'codex', primary: { usedPercent: 32, windowDurationMins: 10_080, resetsAt: start + 180 },
+      secondary: { usedPercent: 10, windowDurationMins: 300, resetsAt: start + 60 } },
+    spark: { limitId: 'spark', primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: start + 900 } },
+  } });
+  await nextTick();
+  assert.match(await frame(thread), /5h 剩余 90% \(1m\) │ 7d 剩余 68% \(3m\)/u);
+  assert.equal(reads, 1);
+  const live = { ...thread, limits: { fiveHour: { remainingPercent: 89 }, weekly: { remainingPercent: 69 } } };
+  assert.match(await frame(live), /5h 剩余 89% \(1m\) │ 7d 剩余 69% \(3m\)/u);
+  now += 60;
+  assert.match(await frame(live), /5h 剩余 89% │ 7d 剩余 69% \(2m\)/u);
+  const weeklyOnly = await frame(thread);
+  assert.match(weeklyOnly, /7d 剩余 68% \(2m\)/u);
+  assert.doesNotMatch(weeklyOnly, /5h 剩余/u);
+  assert.match(await frame({ ...live, threadId: secondThread }), /5h 剩余 89% │ 7d 剩余 69%\n/u);
+  now = start + 180;
+  assert.match(await frame(live), /5h 剩余 89% │ 7d 剩余 69%\n/u);
+});
+
+test('a fresh launch keeps unnamed legacy quotas as their own measured windows', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub legacy cold quota '));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const now = 1795000000;
+  t.mock.method(Date, 'now', () => now * 1000);
+  const hud = createLaunchHud({ cwd, home: cwd, startsNewThread: true, color: false, connect: async () => ({
+    close() {},
+    async request(method) {
+      if (method === 'thread/read') throw Object.assign(new Error('Thread not loaded'), { code: -32600 });
+      if (method === 'config/read') return { config: {} };
+      if (method === 'account/rateLimits/read') return {
+        rateLimitsByLimitId: null,
+        rateLimits: { limitId: null, primary: {
+          usedPercent: 11, windowDurationMins: 300, resetsAt: now + 120,
+        }, secondary: {
+          usedPercent: 28, windowDurationMins: 10_080, resetsAt: now + 600,
+        } },
+      };
+      return { data: [] };
+    },
+  }) });
+  t.after(hud.close);
+  const frame = options => hud.readHud({ threadId: firstThread, ...options });
+  await frame();
+  await nextTick();
+  await frame();
+  await nextTick();
+  assert.match(await frame(), /5h 剩余 89% \(2m\) │ 7d 剩余 72% \(10m\)/u);
+  const native = { fiveHour: { remainingPercent: 44 }, weekly: { remainingPercent: 55 } };
+  assert.match(await frame({ limits: native }), /5h 剩余 89% \(2m\) │ 7d 剩余 72% \(10m\)/u);
+});
+
+test('cold account quotas stay hidden for a restored, custom, or unconfirmed session', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub cold quota scope '));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  for (const [label, options, config, recordedInitially] of [
+    ['restored thread', { startsNewThread: false }, {}],
+    ['account disabled', { useAccountQuota: false }, {}],
+    ['custom provider', {}, { model_provider: 'local' }],
+    ['custom endpoint', {}, { chatgpt_base_url: 'https://local.example/backend-api' }],
+    ['unreadable config', {}, undefined],
+    ['previously recorded custom thread', {}, {}, true],
+    ['previously recorded custom thread with unavailable activity', {}, {}, true],
+  ]) await t.test(label, async t => {
+    let accountReads = 0;
+    let threadReads = 0;
+    const hud = createLaunchHud({ cwd, home: cwd, startsNewThread: true, ...options, color: false, connect: async () => ({
+      close() {},
+      async request(method, params) {
+        if (method === 'thread/read') {
+          if (recordedInitially && threadReads++ === 0) {
+            return { thread: { cwd, id: params.threadId, modelProvider: 'local' } };
+          }
+          throw Object.assign(new Error('Codex thread/read: thread not loaded: ' + params.threadId), { code: -32600 });
+        }
+        if (method === 'thread/turns/list' && label.endsWith('unavailable activity')) throw new Error('Unavailable activity');
+        if (method === 'config/read') return { config };
+        if (method === 'account/rateLimits/read') {
+          accountReads++;
+          return { rateLimits: { limitId: 'codex', primary: {
+            usedPercent: 1, windowDurationMins: 10_080, resetsAt: Math.floor(Date.now() / 1000) + 60,
+          } } };
+        }
+        return { data: [] };
+      },
+    }) });
+    t.after(hud.close);
+    const native = { threadId: firstThread, limits: { weekly: { remainingPercent: 69 } } };
+    await hud.readHud(native);
+    await nextTick();
+    await hud.readHud(native);
+    await nextTick();
+    await hud.readHud(native);
+    await nextTick();
+    assert.match(await hud.readHud(native), /7d 剩余 69%\n/u);
+    assert.equal(accountReads, 0);
+  });
+});
+
 test('the interactive footer cannot relabel another account quota or leak it to a custom provider', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'codex-hub quota source '));
   t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -311,10 +482,10 @@ test('the interactive footer cannot relabel another account quota or leak it to 
   await nextTick();
   const grouped = await hud.readHud({ ...input, threadId: firstThread });
   assert.match(grouped, /Codex 5h .*24% \(20m\)\nSpark 5h .*57%/u);
-  assert.doesNotMatch(grouped, /5h 剩余|89%|90%/u);
+  assert.doesNotMatch(grouped, /(?:5h|7d) 剩余/u);
   const local = await hud.readHud({ ...input, threadId: secondThread });
   assert.match(local, /5h 剩余 89% │ 7d 剩余 90%/u);
-  assert.doesNotMatch(local, /Spark|24%|20m|57%/u);
+  assert.doesNotMatch(local, /^(?:Codex|Spark) 5h /mu);
   assert.equal(accountReads, 1);
 });
 

@@ -456,7 +456,8 @@ for (const [scenario, prompt] of [['empty', null], ['sealed', 'a'.repeat(90)], [
           itemReads.push(params.turnId);
           return { data: [{
             turnId: childTurn.id,
-            item: { type: 'fileChange', id: 'new-file', status: 'completed', changes: [{ path: 'second.md' }] },
+            item: { type: 'fileChange', id: 'new-file', status: 'completed',
+              changes: [{ path: childTurn.id === 'first-child-turn' ? 'first.md' : 'second.md' }] },
           }] };
         }
         return { data: [] };
@@ -464,8 +465,8 @@ for (const [scenario, prompt] of [['empty', null], ['sealed', 'a'.repeat(90)], [
     };
     const frame = async (activityClient = client) => renderActivity(await readActivity(activityClient, { threadId: thread.id }),
       { embedded: true, now: Date.now() / 1000 });
-    assert.match(await frame(), /^✓ reused.*任务 核对旧版脚本$/m);
-    assert.deepEqual(itemReads, []);
+    assert.match(await frame(), /^✓ reused.*任务 核对旧版脚本 │ 最近活动 修改 first\.md$/m);
+    assert.deepEqual(itemReads, ['first-child-turn']);
 
     parentItems = [...parentItems, event('second-start', 'started', base + 1050),
       ...(prompt === undefined ? [] : [dispatch('next-task', 'followupTask', prompt, base + 1100)]),
@@ -479,7 +480,7 @@ for (const [scenario, prompt] of [['empty', null], ['sealed', 'a'.repeat(90)], [
       assert.match(output, /^◐ reused.*最近活动 修改 second\.md$/m);
       assert.doesNotMatch(output, /核对旧版脚本|乱序旧派单|a{64}/u);
     }
-    assert.deepEqual(itemReads, ['second-child-turn', 'second-child-turn']);
+    assert.deepEqual(itemReads, ['first-child-turn', 'second-child-turn', 'second-child-turn']);
   });
 }
 
@@ -597,10 +598,22 @@ test('v2 child rows show evidence from visible child turns and reuse unchanged a
     id, parentThreadId: thread.id, historyMode: 'paginated', status: { type: 'notLoaded' },
     updatedAt: now - 1, preview: 'inherited-thread-preview',
   }));
-  let starts = children.map(({ id }) => ({
-    item: { id: `${id}-start`, type: 'subAgentActivity', kind: 'started', agentThreadId: id, agentPath: `/root/${id}` },
-    startedAtMs: (now - 10) * 1000,
-  }));
+  Object.assign(children[2], {
+    agentRole: 'coder',
+    source: { subAgent: { thread_spawn: {
+      agent_path: '/root/fix_rendering', parent_thread_id: thread.id, depth: 1,
+    } } },
+  });
+  const tasks = { left: '核对入口', right: 'a'.repeat(128), settled: '检查布局' };
+  let starts = children.flatMap(({ id }) => [
+    { item: { id: `${id}-start`, type: 'subAgentActivity', kind: 'started', agentThreadId: id,
+      agentPath: `/root/${id === 'right' ? 'fix_rendering' : id}` },
+      startedAtMs: (now - 10) * 1000 },
+    ...(tasks[id] ? [{ item: {
+      id: `${id}-dispatch`, type: 'collabAgentToolCall', tool: 'spawnAgent', status: 'completed',
+      senderThreadId: thread.id, receiverThreadIds: [id], prompt: tasks[id], agentsStates: {},
+    }, completedAtMs: (now - 10) * 1000 }] : []),
+  ]);
   // The running limit hides the oldest child. A recently finished child reenters once slots open.
   const settled = {
     item: { id: 'settled-end', type: 'subAgentActivity', kind: 'completed', agentThreadId: 'settled' },
@@ -647,13 +660,17 @@ test('v2 child rows show evidence from visible child turns and reuse unchanged a
   const frame = async () => renderActivity(await readActivity(client, { threadId: thread.id }),
     { now: Date.now() / 1000, embedded: true });
   const running = await frame();
-  assert.match(running, /^◐ left.*最近活动 读取 terminal-host\.mjs$/m);
-  assert.match(running, /^◐ right.*最近活动 修改 activity\.mjs$/m);
-  assert.doesNotMatch(running, /hidden|raw-|private-|inherited-|ordinary-final-answer/);
+  assert.match(running, /^◐ left.*任务 核对入口 │ 最近活动 读取 terminal-host\.mjs$/m);
+  assert.match(running, /^◐ coder.*任务名 fix_rendering │ 最近活动 修改 activity\.mjs$/m);
+  assert.doesNotMatch(running, /hidden|raw-|private-|inherited-|ordinary-final-answer|a{64}/);
   assert.deepEqual(itemReads.toSorted(), ['left', 'right', 'settled']);
 
+  Object.assign(children[2], { agentNickname: 'Flora', agentRole: 'fix_rendering' });
+  children[1].agentNickname = 'Ivy';
   t.mock.timers.tick(5001);
-  assert.match(await frame(), /^◐ left.*读取 terminal-host\.mjs$/m);
+  const withNicknames = await frame();
+  assert.match(withNicknames, /^◐ Ivy.*任务 核对入口 │ 最近活动 读取 terminal-host\.mjs$/m);
+  assert.match(withNicknames, /^◐ Flora.*任务名 fix_rendering │ 最近活动 修改 activity\.mjs$/m);
   assert.equal(itemReads.length, 3);
 
   starts = [...starts, {
@@ -665,10 +682,89 @@ test('v2 child rows show evidence from visible child turns and reuse unchanged a
   }];
   t.mock.timers.tick(5001);
   const restarted = await frame();
-  assert.match(restarted, /^◐ left/m);
-  assert.doesNotMatch(restarted, /读取 terminal-host\.mjs/u);
-  assert.match(restarted, /^✓ settled.*最近活动 计划 核对状态栏布局$/m);
+  assert.match(restarted, /^◐ Ivy/m);
+  assert.doesNotMatch(restarted, /核对入口|读取 terminal-host\.mjs/u);
+  assert.match(restarted, /^✓ settled.*任务 检查布局 │ 最近活动 计划 核对状态栏布局$/m);
   assert.doesNotMatch(restarted, /计划细节/u);
+});
+
+test('a launch name without a distinct nickname or role uses the child id on its row', async () => {
+  const child = { id: '019af525-e5ce-489a-8a62-42409356abef', parentThreadId: thread.id, agentRole: 'reviewer' };
+  const started = { item: {
+    id: 'started', type: 'subAgentActivity', kind: 'started', agentThreadId: child.id, agentPath: '/root/reviewer',
+  } };
+  const frame = async () => {
+    const client = { async request(method, params) {
+      if (method === 'thread/read') return { thread };
+      if (method === 'thread/list') return { data: [child] };
+      if (method === 'thread/turns/list') return { data: [params.threadId === child.id ? { ...turn, id: 'child-turn' } : turn] };
+      if (params?.threadId === thread.id) return { data: [started] };
+      return { data: [{ turnId: 'child-turn', item: { id: 'plan', type: 'plan', text: '核对额度' } }] };
+    } };
+    return renderActivity(await readActivity(client, { threadId: thread.id }), { embedded: true });
+  };
+  assert.match(await frame(), /^◐ reviewer.*最近活动 计划 核对额度$/m);
+  child.source = { subAgent: { thread_spawn: {
+    agent_path: '/root/reviewer', parent_thread_id: 'other-thread', depth: 1,
+  } } };
+  assert.doesNotMatch(await frame(), /任务名 reviewer/u);
+  child.source.subAgent.thread_spawn.parent_thread_id = thread.id;
+  assert.match(await frame(), /^◐ 子代理 9356abef.*任务名 reviewer │ 最近活动 计划 核对额度$/m);
+});
+
+test('warm and cold HUDs omit the launch name on a later run of the same child', async t => {
+  const now = 1760007000;
+  t.mock.timers.enable({ apis: ['Date'], now: now * 1000 });
+  const child = { id: 'reused', parentThreadId: thread.id, agentNickname: 'Flora', createdAt: now, updatedAt: now,
+    source: { subAgent: { thread_spawn: { agent_path: '/root/check_logs', parent_thread_id: thread.id, depth: 1 } } } };
+  const start = (id, startedAtMs) => ({
+    item: { id, type: 'subAgentActivity', kind: 'started', agentThreadId: child.id, agentPath: '/root/check_logs' },
+    startedAtMs,
+  });
+  const dispatch = (id, tool, completedAtMs) => ({
+    item: { id, type: 'collabAgentToolCall', tool, status: 'completed',
+      senderThreadId: thread.id, receiverThreadIds: [child.id], prompt: 'a'.repeat(128) },
+    completedAtMs,
+  });
+  const spawn = dispatch('spawn', 'spawnAgent', now * 1000 + 35);
+  let parentItems = [start('launch', now * 1000 + 30), spawn];
+  let childTurn = { id: 'first-turn', status: 'inProgress', startedAt: now, completedAt: null };
+  const client = { async request(method, params) {
+    if (method === 'thread/read') return { thread };
+    if (method === 'thread/list') return { data: [child] };
+    if (method === 'thread/turns/list') return { data: [params.threadId === child.id ? childTurn : turn] };
+    if (params?.threadId === thread.id) return { data: parentItems.toReversed() };
+    return { data: [{ turnId: childTurn.id, item: {
+      id: 'change', type: 'fileChange', status: 'completed',
+      changes: [{ path: childTurn.id === 'first-turn' ? 'logs.mjs' : 'deploy.mjs' }],
+    } }] };
+  } };
+  const frame = async (reader = client) => renderActivity(await readActivity(reader, { threadId: thread.id }),
+    { now: Date.now() / 1000, embedded: true });
+  assert.match(await frame(), /^◐ Flora.*任务名 check_logs │ 最近活动 修改 logs\.mjs$/m);
+
+  t.mock.timers.tick(3000);
+  parentItems = [spawn, start('launch', (now + 3) * 1000 + 30)];
+  childTurn = { ...childTurn, startedAt: now + 3 };
+  assert.match(await frame({ ...client }), /^◐ Flora.*任务名 check_logs │ 最近活动 修改 logs\.mjs$/m);
+
+  const twoHoursLater = now + 7200;
+  child.updatedAt = twoHoursLater;
+  childTurn = { id: 'next-turn', status: 'inProgress', startedAt: twoHoursLater, completedAt: null };
+  parentItems = [start('restart', twoHoursLater * 1000 + 50)];
+  t.mock.timers.tick(7_198_000);
+  const later = await Promise.all([frame(), frame({ ...client })]);
+  assert.doesNotMatch(later[1], /任务名 check_logs/u);
+
+  child.createdAt = twoHoursLater;
+  const followup = dispatch('follow-up', 'followupTask', twoHoursLater * 1000 + 55);
+  parentItems.push(followup);
+  const dispatchAfterStart = await frame({ ...client });
+  parentItems = [{ ...followup, completedAtMs: twoHoursLater * 1000 + 45 }, parentItems[0]];
+  for (const output of [...later, dispatchAfterStart, await frame({ ...client })]) {
+    assert.match(output, /^◐ Flora.*最近活动 修改 deploy\.mjs$/m);
+    assert.doesNotMatch(output, /任务名 check_logs|a{64}/u);
+  }
 });
 
 test('child notes stay on their metadata row and clip different-width characters safely', () => {
@@ -706,6 +802,22 @@ test('child notes continue below tight metadata without taking another agent slo
   }
   assert.match(frame(55, 4), /进行中 │ 10s\n  任务 核对启动入口和终端布局$/u);
   assert.match(frame(55, 1), /◐ reviewer.*进行中 │ 10s$/u);
+});
+
+test('long child tasks leave room for recent activity and precede it across narrow continuations', () => {
+  const now = 1760007000;
+  const snapshot = {
+    id: thread.id,
+    agents: [{ name: 'worker', status: 'running', startedAtMs: (now - 3) * 1000 }, {
+      name: 'reviewer', model: 'gpt-6.2-astra', reasoning: 'max', status: 'running',
+      startedAtMs: (now - 10) * 1000, task: '核对启动入口和终端布局'.repeat(5), activity: '读取 HUD 文件',
+    }],
+  };
+  const frame = (width, height) => renderActivity(snapshot, { now, width, height, embedded: true });
+  assert.match(frame(112, 4), /^◐ reviewer.*任务 核对启动.*… │ 最近活动 读取 HUD 文件$/m);
+  const narrow = frame(48, 7);
+  assert.match(narrow, /^◐ reviewer.*\n  任务 核对启动.*…\n  最近活动 读取 HUD 文件\n◐ worker/m);
+  assert.ok(narrow.split('\n').every(line => [...line].reduce((cells, part) => cells + (/\p{Script=Han}/u.test(part) ? 2 : 1), 0) <= 48));
 });
 
 test('a running child survives a long parent turn and the next parent turn until confirmed finished', async t => {

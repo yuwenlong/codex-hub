@@ -294,8 +294,9 @@ test('includes an available thread cost in a one-shot snapshot', async t => {
 
 test('fetches measured account quota groups once in the background for related official sessions', { timeout: 1500 }, async t => {
   const { cwd, home, path } = await fixture(t);
-  const now = 1795000000;
+  let now = 1795000000;
   t.mock.method(Date, 'now', () => now * 1000);
+  const weeklyReset = now + 45;
   const release = Promise.withResolvers();
   const windows = (usedPercent, windowDurationMins, resetsAt = null) => ({ usedPercent, windowDurationMins, resetsAt });
   let reads = 0;
@@ -303,11 +304,14 @@ test('fetches measured account quota groups once in the background for related o
     if (method === 'config/read') return { config: { model_provider: 'openai' } };
     if (method !== 'account/rateLimits/read') throw new Error('Unsupported fixture request');
     assert.deepEqual(params, {});
-    assert.equal(options.timeoutMs, 1500);
+    assert.equal(options.timeoutMs, 15_000);
     reads++;
     return release.promise;
   } };
-  const local = tokenEvent(null, { primary: { used_percent: 15, window_minutes: 300, resets_at: now + 100 } });
+  const local = tokenEvent(null, {
+    primary: { used_percent: 15, window_minutes: 300, resets_at: now + 100 },
+    secondary: { used_percent: 100, window_minutes: 10_080, resets_at: weeklyReset },
+  });
   await writeFile(path, `${meta}\n${local}\n`);
   const thread = { id, path, modelProvider: 'openai' };
   const options = { cwd, home };
@@ -331,7 +335,7 @@ test('fetches measured account quota groups once in the background for related o
   assert.deepEqual(current.quotaGroups, [
     { id: 'codex', name: 'Codex', windows: [
       { minutes: 300, usedPercent: 93, remainingPercent: 7, resetsAt: now + 300 },
-      { minutes: 10_080, usedPercent: 100, remainingPercent: 0, resetsAt: undefined },
+      { minutes: 10_080, usedPercent: 100, remainingPercent: 0, resetsAt: weeklyReset },
     ] },
     { id: 'spark', name: undefined, windows: [{ minutes: 300, usedPercent: 0.001, remainingPercent: 99.99, resetsAt: undefined }] },
     { id: 'trial', name: 'Trial', windows: [{ minutes: 120, usedPercent: 0.07, remainingPercent: 99.93, resetsAt: undefined }] },
@@ -340,7 +344,44 @@ test('fetches measured account quota groups once in the background for related o
   assert.equal(custom.quotaGroups, undefined);
   assert.equal(custom.limits.fiveHour.remainingPercent, 85);
   assert.equal((await readHudMetrics(client, undefined, options)).quotaGroups, undefined);
+  now = weeklyReset;
+  const afterReset = await readHudMetrics(client, thread, options);
+  assert.equal(afterReset.quotaGroups[0].windows[1].resetsAt, undefined);
   assert.equal(reads, 1);
+});
+
+test('duplicates of an account bucket supplement only the live reset of an identical window', async t => {
+  const { cwd, home } = await fixture(t);
+  const start = 1795000000;
+  let now = start;
+  t.mock.method(Date, 'now', () => now * 1000);
+  const hour = (usedPercent, resetsAt) => ({ windowDurationMins: 300, usedPercent, resetsAt });
+  const week = (usedPercent, resetsAt) => ({ windowDurationMins: 10_080, usedPercent, resetsAt });
+  const client = { async request(method) {
+    if (method === 'config/read') return { config: {} };
+    if (method === 'account/rateLimits/read') return {
+      rateLimitsByLimitId: {
+        codex: { limitId: 'codex', primary: hour(22), secondary: week(31) },
+        alias: { limitId: 'codex', primary: hour(22, start + 20), secondary: week(32, start + 40) },
+        spark: { limitId: 'spark', primary: hour(22, start + 40) },
+      },
+      rateLimits: { limitId: 'codex', primary: hour(23, start + 40), secondary: week(31, start + 30) },
+    };
+    return { data: [] };
+  } };
+  const options = { cwd, home, waitForCost: true };
+  const thread = { id, modelProvider: 'openai' };
+  const startup = await readHudMetrics(client, undefined, { ...options, startsNewThread: true });
+  const recorded = () => readHudMetrics(client, thread, options);
+  assert.deepEqual(startup.limits, {
+    fiveHour: { usedPercent: 22, remainingPercent: 78, resetsAt: start + 20 },
+    weekly: { usedPercent: 31, remainingPercent: 69, resetsAt: start + 30 },
+  });
+  assert.deepEqual((await recorded()).quotaGroups[0].windows.map(window => window.resetsAt), [start + 20, start + 30]);
+  now = start + 20;
+  assert.deepEqual((await recorded()).quotaGroups[0].windows.map(window => window.resetsAt), [undefined, start + 30]);
+  now = start + 30;
+  assert.deepEqual((await recorded()).quotaGroups[0].windows.map(window => window.resetsAt), [undefined, undefined]);
 });
 
 test('uses official legacy quotas and falls back to local data after a failed refresh', async t => {

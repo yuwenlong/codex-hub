@@ -73,7 +73,7 @@ Codex CLI 0.170.0 对带命令行界面覆盖的会话使用内嵌的 app-server
 *图为同一 Codex CLI 实际运行画面，子代理事件与 23% 上下文来自受控的本机会话记录。*
 
 - 工具和 MCP 活动取自最近一轮。每个 MCP 服务器只出现一次，有失败会标记。Skills 行显示 Codex 明确记录的已选技能。
-- 子代理优先显示运行中的，最多三项。其中最多两项可以是近 60 秒内结束的代理。名字、模型、推理档位和耗时取自已有的代理事件。有明确派单记录时，子代理行会显示简短任务。缺少派单正文时，会显示可查到的子会话最近活动。
+- 子代理优先显示运行中的，最多三项。其中最多两项可以是近 60 秒内结束的代理。名字、模型、推理档位和耗时取自已有的代理事件。子代理行先显示派单任务，再显示可查到的最近活动。Codex 未公开派单正文时，有启动记录的任务名会标为「任务名」。
 - 任务行采用原生状态栏中 `update_plan` 的进度计数。环境行统计生效的 `AGENTS.md`、已启用的 MCP 服务器和钩子，以及本地 app-server 返回的内联 `[agents.<name>]` 角色。命名配置档可能使环境计数不可用。没有数据的字段和空活动行会省略。
 
 多行布局参考了 Claude HUD，以及 agy-hud 对齐样式和启用完整面板的改动。[Claude HUD](https://github.com/jarrodwatts/claude-hud) · [agy-hud 对齐提交](https://github.com/yuwenlong/agy-hud/commit/3a585b5376f42685d8a21f83342ceb34f0f76d10) · [agy-hud 完整面板提交](https://github.com/yuwenlong/agy-hud/commit/54c25a60950bb0717910492d37af0fa53384b3dc)
