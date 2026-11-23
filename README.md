@@ -21,12 +21,10 @@ Put Node.js 22 or later and Codex CLI on `PATH`. On Linux, macOS, and WSL, the i
 ### Bash or Zsh (Linux, macOS, WSL)
 
 ```bash
-(installer=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh) && [ -n "$installer" ] &&
-  command env "CODEX_HOME=${CODEX_HOME-}" "CODEX_HUB_SHELL=${CODEX_HUB_SHELL:-${ZSH_VERSION:+zsh}${BASH_VERSION:+bash}}" "ZDOTDIR=${ZDOTDIR-}" bash -c "$installer") &&
-  case $- in *i*) . "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/activate.sh" ;; esac
+bash <(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh)
 ```
 
-This command loads Codex Hub in the current interactive shell, so you can run `codex` in the same terminal. See [diagnostics](#diagnostics-and-explicit-launcher) if an existing shell still shows the single-line footer.
+The installer configures your shell automatically. Open a new terminal after installation and run `codex`, or run `. "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/activate.sh"` to enable it immediately in the current terminal. Run the same command again to upgrade (if you use a custom `CODEX_HOME`, run `export CODEX_HOME=...` first). See [diagnostics](#diagnostics-and-explicit-launcher) if an existing shell still shows the single-line footer.
 
 ### Windows PowerShell
 
@@ -50,7 +48,7 @@ if defined CODEX_HOME set "CODEX_HUB_CLI=%CODEX_HOME%\codex-hub\bin\codex-hub.mj
 node "%CODEX_HUB_CLI%" launch --
 ```
 
-The installer downloads `codex-hub.zip` from the latest published GitHub release and installs the runtime under `$CODEX_HOME/codex-hub`, which defaults to `~/.codex/codex-hub`. Export a custom `CODEX_HOME` before running standalone commands such as the uninstaller, using the same value for installation, launch, and removal.
+The installer downloads `codex-hub.zip` from the latest published GitHub release and installs the runtime under `$CODEX_HOME/codex-hub`, which defaults to `~/.codex/codex-hub`. Export a custom `CODEX_HOME` before running the installer or uninstaller, using the same value for installation, launch, and removal.
 
 The installer retries temporary connection errors and HTTP failures such as 429 or 503 while downloading the release. If the initial script download fails, run the same command again.
 
@@ -73,7 +71,7 @@ For sessions using the official OpenAI provider, the HUD displays the quota grou
 *Captured from the same Codex CLI using a controlled local session record for the subagent events and 23% context value.*
 
 - The latest turn supplies tool activity and MCP calls. MCP servers are listed once and failures are marked. The Skills row shows selections explicitly recorded by Codex.
-- The HUD puts running subagents first and shows up to three total. It reserves up to two of those slots for agents that finished within the last 60 seconds. Names, models, effort, and elapsed times come from recorded agent events when available. Each row puts the recorded assignment before the child's recent activity when both are available. If Codex withholds the assignment text, the HUD displays the recorded launch task name when available.
+- The HUD shows a separate row for each running subagent and hides finished subagents. Names, models, effort, and elapsed times come from recorded agent events when available. Each row puts the recorded assignment before the child's recent activity when both are available. If Codex withholds the assignment text, the HUD displays the recorded launch task name when available.
 - Task progress follows the current `update_plan` counts from the native footer. The environment row counts effective `AGENTS.md` files, enabled MCP servers and hooks, and inline `[agents.<name>]` roles available through the local app-server. A named CLI profile can make environment counts unavailable. Codex Hub omits missing fields and empty activity rows.
 
 The layout draws on Claude HUD and agy-hud's alignment and expanded default. [Claude HUD](https://github.com/jarrodwatts/claude-hud) · [agy-hud alignment](https://github.com/yuwenlong/agy-hud/commit/3a585b5376f42685d8a21f83342ceb34f0f76d10) · [agy-hud expanded default](https://github.com/yuwenlong/agy-hud/commit/54c25a60950bb0717910492d37af0fa53384b3dc)
@@ -126,7 +124,7 @@ node "$codexHubCli" preview
 ### Bash or Zsh (Linux, macOS, WSL)
 
 ```bash
-(uninstaller=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.sh) && [ -n "$uninstaller" ] && bash -c "$uninstaller")
+bash <(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.sh)
 ```
 
 ### Windows PowerShell

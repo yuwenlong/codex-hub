@@ -84,12 +84,19 @@ simulated=false
 output=''
 previous=''
 retries=0
+source_script=''
 for arg; do
   if [[ "$previous" == -o ]]; then output="$arg"; fi
   if [[ "$previous" == --retry ]]; then retries="$arg"; fi
   case "$arg" in
-    ${rawBase}/scripts/install.sh) arg="$FIXTURE_INSTALL_URL" ;;
-    ${rawBase}/uninstall.sh) arg="$FIXTURE_UNINSTALL_URL" ;;
+    ${rawBase}/scripts/install.sh)
+      source_script=${JSON.stringify(fileURLToPath(new URL('../scripts/install.sh', import.meta.url)))}
+      arg="$FIXTURE_INSTALL_URL"
+      ;;
+    ${rawBase}/uninstall.sh)
+      source_script=${JSON.stringify(fileURLToPath(new URL('../uninstall.sh', import.meta.url)))}
+      arg="$FIXTURE_UNINSTALL_URL"
+      ;;
     https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip) arg="$FIXTURE_ARCHIVE_URL" ;;
   esac
   if [[ "$arg" == fixture:partial ]]; then partial=true; fi
@@ -102,6 +109,9 @@ for arg; do
 done
 if "$partial"; then
   prefix='printf ran > "$CODEX_HOME/partial-ran"'
+  if [[ -n "$source_script" ]]; then
+    prefix="$(head -n 8 "$source_script")"$'\\n'"  $prefix"
+  fi
   if [[ -n "$output" ]]; then printf '%s\\n' "$prefix" > "$output"; else printf '%s\\n' "$prefix"; fi
   exit 18
 fi
@@ -181,6 +191,7 @@ async function interactiveShell(shell, cwd, env, command) {
 test('Bash and Zsh online install commands activate Codex in the shell that ran them', { ...bashOnly, timeout: 25000 }, async t => {
   const readmes = [['/bin/bash', 'README.md'], ['/bin/zsh', 'README_zh.md']];
   const session = '12345678-1234-4321-9234-123456789012';
+  const activate = '. "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/activate.sh"';
   for (const [shell, readme] of readmes) {
     if (!existsSync(shell)) continue;
     const { root, env } = await fixture(t, { managedShell: true });
@@ -202,9 +213,11 @@ test('Bash and Zsh online install commands activate Codex in the shell that ran 
       unset CODEX_HOME
       CODEX_HOME="$FIXTURE_LINKED_HOME"
       codex before install
-      ${install}
+      ZDOTDIR="$ZDOTDIR" CODEX_HOME="$CODEX_HOME" ${install}
+      ${activate}
       codex resume ${session}
-      ${install}
+      ZDOTDIR="$ZDOTDIR" CODEX_HOME="$CODEX_HOME" ${install}
+      ${activate}
       codex after reinstall
       mkdir -p "$HOME/alternate home"
       cp -R "$CODEX_HOME/codex-hub" "$HOME/alternate home/"
@@ -232,9 +245,9 @@ test('Bash and Zsh online install commands activate Codex in the shell that ran 
 
 test('activation reports a legacy installation configured for a different shell', { ...bashOnly, timeout: 10000 }, async t => {
   const { env, root } = await fixture(t, { managedShell: true });
-  const legacy = `(installer=$(curl -fsSL ${rawBase}/scripts/install.sh) && [ -n "$installer" ] && bash -c "$installer")`;
+  const install = readmeCommand('scripts/install.sh');
   const output = await interactiveShell('/bin/bash', root, { ...env, SHELL: '/bin/zsh', ZDOTDIR: root, CODEX_HUB_SHELL: '' }, `
-    ${legacy}
+    CODEX_HUB_SHELL=zsh ${install}
     . "$CODEX_HOME/codex-hub/scripts/activate.sh"
     printf 'ACTIVATION %s\\n' "$?"
     codex from bash
@@ -258,7 +271,7 @@ test('exporting a custom home also works with a launcher already loaded before u
       unset CODEX_HOME
       CODEX_HOME="$FIXTURE_LEGACY_HOME"
       . "$FIXTURE_OLD_PROFILE"
-      ${install}
+      CODEX_HOME="$CODEX_HOME" ${install}
       codex before-export
       export CODEX_HOME
       codex after-export
@@ -273,13 +286,16 @@ test('online activation preserves custom shell commands and honors skipped integ
   const run = await fixture(t, { managedShell: true });
   const env = { ...run.env, SHELL: shell, CODEX_HUB_SHELL: '' };
   const install = readmeCommand('scripts/install.sh');
+  const activate = '. "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/activate.sh"';
   const custom = await interactiveShell(shell, run.root, env, `
     codex() { printf 'CUSTOM %s\\n' "$1"; }
     ${install}
+    ${activate}
     codex existing-function
     unset -f codex
     alias codex='printf "CUSTOM ALIAS\\n"'
     ${install}
+    ${activate}
     eval 'codex'
     unalias codex
     codex still native
@@ -288,49 +304,60 @@ test('online activation preserves custom shell commands and honors skipped integ
   assert.match(custom, /CUSTOM ALIAS/u);
   assert.match(custom, /NATIVE still native/u);
 
-  const noIntegration = await interactiveShell(shell, run.root, { ...env, CODEX_HUB_SHELL: 'none' }, `${install}\ncodex opted out`);
+  const noIntegration = await interactiveShell(shell, run.root, { ...env, CODEX_HUB_SHELL: 'none' },
+    `${install}\n${activate}\ncodex opted out`);
   assert.match(noIntegration, /NATIVE opted out/u);
+  const failed = await interactiveShell(shell, run.root, { ...env, FIXTURE_ARCHIVE_URL: 'fixture:partial' },
+    `${install} && ${activate}\ncodex after failure`);
+  assert.match(failed, /NATIVE after failure/u);
+  assert.equal(existsSync(join(run.home, 'partial-ran')), false);
   const startup = join(run.root, '.bashrc');
   writeFileSync(startup, 'export CODEX_HUB_TEST_PROFILE=untouched\n');
   const edited = await interactiveShell(shell, run.root, env, `
     ${install}
+    ${activate}
     unset -f codex
     node -e 'const fs = require("fs"); const p = process.argv[1]; fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("launch --", "launch -- edited"))' "$HOME/.bashrc"
     ${install}
+    ${activate}
     codex after conflict
     printf '%s\\n' "\${CODEX_HUB_TEST_PROFILE-unread}"
   `);
   assert.match(edited, /NATIVE after conflict/u);
   assert.match(edited, /\bunread\b/u);
   assert.match(readFileSync(startup, 'utf8'), /launch -- edited/u);
-  const failed = await interactiveShell(shell, run.root, { ...env, FIXTURE_INSTALL_URL: 'fixture:partial' },
-    `${install}\ncodex after failure`);
-  assert.match(failed, /NATIVE after failure/u);
-  assert.equal(existsSync(join(run.home, 'partial-ran')), false);
 
-  const activate = join(run.home, 'codex-hub', 'scripts', 'activate.sh');
+  const activatePath = join(run.home, 'codex-hub', 'scripts', 'activate.sh');
   writeFileSync(join(run.home, 'codex-hub', 'lib', 'shell.mjs'), `
     process.stdout.write('codex() { printf "PARTIAL\\\\n"; }\\n');
     process.exitCode = 9;
   `);
-  const partialActivation = await interactiveShell(shell, run.root, { ...env, FIXTURE_ACTIVATE: activate },
+  const partialActivation = await interactiveShell(shell, run.root, { ...env, FIXTURE_ACTIVATE: activatePath },
     '. "$FIXTURE_ACTIVATE"\ncode=$?\nprintf "ACTIVATE %s\\n" "$code"\ncodex after partial');
   assert.match(partialActivation, /ACTIVATE 1/u);
   assert.match(partialActivation, /NATIVE after partial/u);
 });
 
-test('Bash README commands reject missing, empty, and truncated entry scripts', bashOnly, async t => {
+test('Bash README commands skip missing and empty entry scripts and reject truncated ones', bashOnly, async t => {
   const run = await fixture(t);
   const empty = join(run.root, 'empty.sh');
   writeFileSync(empty, '');
+  const missing = pathToFileURL(join(run.root, 'missing.sh')).href;
+  const emptyUrl = pathToFileURL(empty).href;
   for (const readme of ['README.md', 'README_zh.md']) {
     for (const entry of ['scripts/install.sh', 'uninstall.sh']) {
       const entryUrl = entry === 'uninstall.sh' ? 'FIXTURE_UNINSTALL_URL' : 'FIXTURE_INSTALL_URL';
-      for (const url of [pathToFileURL(join(run.root, 'missing.sh')).href, pathToFileURL(empty).href, 'fixture:partial']) {
-        const result = await run.launch(entry, { [entryUrl]: url }, readme);
-        assert.notEqual(result.status, 0, `${readme} ${entry} accepted ${url}`);
+      for (const url of [missing, emptyUrl]) {
+        await run.launch(entry, { [entryUrl]: url }, readme);
         assert.equal(existsSync(join(run.home, 'partial-ran')), false);
+        assert.deepEqual(readdirSync(run.home), []);
+        assert.deepEqual(readdirSync(run.temp), []);
       }
+      const truncated = await run.launch(entry, { [entryUrl]: 'fixture:partial' }, readme);
+      assert.notEqual(truncated.status, 0, `${readme} ${entry} accepted truncated stream`);
+      assert.equal(existsSync(join(run.home, 'partial-ran')), false);
+      assert.deepEqual(readdirSync(run.home), []);
+      assert.deepEqual(readdirSync(run.temp), []);
     }
   }
   assert.deepEqual(run.calls(), []);

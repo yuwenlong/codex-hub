@@ -347,7 +347,10 @@ test('fetches measured account quota groups once in the background for related o
   now = weeklyReset;
   const afterReset = await readHudMetrics(client, thread, options);
   assert.equal(afterReset.quotaGroups[0].windows[1].resetsAt, undefined);
-  assert.equal(reads, 1);
+  assert.equal(reads, 2);
+  now = weeklyReset + 5;
+  await readHudMetrics(client, thread, options);
+  assert.equal(reads, 2);
 });
 
 test('duplicates of an account bucket supplement only the live reset of an identical window', async t => {
@@ -500,7 +503,92 @@ test('a cached response reselects a live alias or the legacy bucket as windows e
   assert.deepEqual(await values(), [['canonical', 95, 30]]);
   now = start + 30;
   assert.deepEqual(await values(), [['legacy', 60, 120]]);
+  assert.equal(requests, 4);
+  now = start + 31;
+  assert.deepEqual(await values(), [['legacy', 60, 120]]);
+  assert.equal(requests, 4);
+});
+
+test('refreshes account quotas immediately when a window crosses resetsAt before the 60s cache expires', async t => {
+  const { cwd, home } = await fixture(t);
+  const start = 1795000000;
+  let now = start;
+  t.mock.method(Date, 'now', () => now * 1000);
+  let requests = 0;
+  let delayed = true;
+  const client = { async request(method) {
+    if (method === 'config/read') return { config: { model_provider: 'openai' } };
+    if (method === 'account/rateLimits/read') {
+      requests++;
+      const expired = now < start + 15 || delayed;
+      return { rateLimitsByLimitId: {
+        codex: {
+          limitId: 'codex',
+          limitName: 'Codex',
+          primary: {
+            usedPercent: expired ? 100 : 0,
+            windowDurationMins: 300,
+            resetsAt: expired ? start + 15 : start + 18_015,
+          },
+          secondary: {
+            usedPercent: 20,
+            windowDurationMins: 10_080,
+            resetsAt: start + 86_400,
+          },
+        },
+      } };
+    }
+    return {};
+  } };
+  const thread = { id, modelProvider: 'openai' };
+  const read = () => readHudMetrics(client, thread, { cwd, home, waitForCost: true });
+
+  const initial = await read();
   assert.equal(requests, 1);
+  assert.deepEqual(initial.quotaGroups[0].windows.map(w => [w.minutes, w.remainingPercent, w.resetsAt]), [
+    [300, 0, start + 15],
+    [10_080, 80, start + 86_400],
+  ]);
+
+  now = start + 14;
+  await read();
+  assert.equal(requests, 1);
+
+  // At resetsAt (15s < 60s refreshAt), the expired 5h window triggers an immediate refresh.
+  now = start + 15;
+  await read();
+  assert.equal(requests, 2);
+
+  // Within the 2s minRetryAt window, a delayed server reset does not spam requests.
+  now = start + 16;
+  await read();
+  assert.equal(requests, 2);
+
+  // After minRetryAt (2s), the next poll immediately fetches the newly reset 5h quota window.
+  delayed = false;
+  now = start + 17;
+  const refreshed = await read();
+  assert.equal(requests, 3);
+  assert.deepEqual(refreshed.quotaGroups[0].windows.map(w => [w.minutes, w.remainingPercent, w.resetsAt]), [
+    [300, 100, start + 18_015],
+    [10_080, 80, start + 86_400],
+  ]);
+
+  // If the server still returns a stale resetsAt after the +2s retry, or includes a historical bucket
+  // already expired by >= 2s when fetched, it honors the 60s refreshAt instead of polling every 2s.
+  delayed = true;
+  now = start + 100;
+  await read();
+  assert.equal(requests, 4);
+  for (const offset of [103, 110, 130, 159]) {
+    now = start + offset;
+    await read();
+    assert.equal(requests, 4);
+  }
+  delayed = false;
+  now = start + 160;
+  await read();
+  assert.equal(requests, 5);
 });
 
 test('the built-in provider needs an official effective endpoint before reading account quotas', async t => {

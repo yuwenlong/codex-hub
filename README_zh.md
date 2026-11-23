@@ -21,12 +21,10 @@ Codex 记录了活动后，相应的行才会出现。HUD 在终端里的 Codex 
 ### Bash 或 Zsh（Linux、macOS、WSL）
 
 ```bash
-(installer=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh) && [ -n "$installer" ] &&
-  command env "CODEX_HOME=${CODEX_HOME-}" "CODEX_HUB_SHELL=${CODEX_HUB_SHELL:-${ZSH_VERSION:+zsh}${BASH_VERSION:+bash}}" "ZDOTDIR=${ZDOTDIR-}" bash -c "$installer") &&
-  case $- in *i*) . "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/activate.sh" ;; esac
+bash <(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh)
 ```
 
-这段命令会在当前交互式 shell 中加载 Codex Hub，安装后即可在同一终端运行 `codex`。已有终端仍显示原生单行时，可查看[排障步骤](#诊断与显式启动)。
+安装器会自动配置当前 shell 的启动入口。安装后新开终端即可直接运行 `codex`，若要在当前已打开的终端立即启用，请运行 `. "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/activate.sh"`。升级时重新运行上述短命令即可（若使用自定义 `CODEX_HOME`，请先执行 `export CODEX_HOME=...`）。已有终端仍显示原生单行时，可查看[排障步骤](#诊断与显式启动)。
 
 ### Windows PowerShell
 
@@ -50,7 +48,7 @@ if defined CODEX_HOME set "CODEX_HUB_CLI=%CODEX_HOME%\codex-hub\bin\codex-hub.mj
 node "%CODEX_HUB_CLI%" launch --
 ```
 
-安装器从 GitHub 最新正式发行版下载 `codex-hub.zip`，并将运行文件放在 `$CODEX_HOME/codex-hub`，默认为 `~/.codex/codex-hub`。若使用自定义 `CODEX_HOME`，请在运行卸载器等独立命令前导出该变量，安装、启动和卸载都使用同一个值。
+安装器从 GitHub 最新正式发行版下载 `codex-hub.zip`，并将运行文件放在 `$CODEX_HOME/codex-hub`，默认为 `~/.codex/codex-hub`。若使用自定义 `CODEX_HOME`，请在运行安装器、卸载器等命令前导出该变量，安装、启动和卸载都使用同一个值。
 
 下载发行包遇到临时连接故障或 HTTP 429、503 等响应时，安装器会自动重试。如果开头的脚本下载失败，重新运行同一条命令即可。
 
@@ -73,7 +71,7 @@ Codex CLI 0.170.0 对带命令行界面覆盖的会话使用内嵌的 app-server
 *图为同一 Codex CLI 实际运行画面，子代理事件与 23% 上下文来自受控的本机会话记录。*
 
 - 工具和 MCP 活动取自最近一轮。每个 MCP 服务器只出现一次，有失败会标记。Skills 行显示 Codex 明确记录的已选技能。
-- 子代理优先显示运行中的，最多三项。其中最多两项可以是近 60 秒内结束的代理。名字、模型、推理档位和耗时取自已有的代理事件。子代理行先显示派单任务，再显示可查到的最近活动。Codex 未公开派单正文时，有启动记录的任务名会标为「任务名」。
+- HUD 为每个正在运行的子代理单独显示一行，已完成的子代理不予显示。名字、模型、推理档位和耗时取自已有的代理事件。子代理行先显示派单任务，再显示可查到的最近活动。Codex 未公开派单正文时，有启动记录的任务名会标为「任务名」。
 - 任务行采用原生状态栏中 `update_plan` 的进度计数。环境行统计生效的 `AGENTS.md`、已启用的 MCP 服务器和钩子，以及本地 app-server 返回的内联 `[agents.<name>]` 角色。命名配置档可能使环境计数不可用。没有数据的字段和空活动行会省略。
 
 多行布局参考了 Claude HUD，以及 agy-hud 对齐样式和启用完整面板的改动。[Claude HUD](https://github.com/jarrodwatts/claude-hud) · [agy-hud 对齐提交](https://github.com/yuwenlong/agy-hud/commit/3a585b5376f42685d8a21f83342ceb34f0f76d10) · [agy-hud 完整面板提交](https://github.com/yuwenlong/agy-hud/commit/54c25a60950bb0717910492d37af0fa53384b3dc)
@@ -126,7 +124,7 @@ node "$codexHubCli" preview
 ### Bash 或 Zsh（Linux、macOS、WSL）
 
 ```bash
-(uninstaller=$(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.sh) && [ -n "$uninstaller" ] && bash -c "$uninstaller")
+bash <(curl -fsSL https://raw.githubusercontent.com/yuwenlong/codex-hub/main/uninstall.sh)
 ```
 
 ### Windows PowerShell

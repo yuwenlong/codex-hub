@@ -47,6 +47,24 @@ test('passes through only valid native task progress counts', () => {
   for (const invalid of ['Tasks 0/0', 'Tasks 4/3', 'Tasks 1/9999999999999999999']) {
     assert.equal(inspectFooter(lines(invalid), abbreviated(firstId), 0).taskProgress, undefined);
   }
+  for (const [firstPart, secondPart] of [['Tasks 1/', '  3'], ['Tasks 1', '  /3'], ['Ta', '  sks 1/3']]) {
+    const folded = inspectFooter([
+      '› Ask Codex to do anything',
+      '',
+      `  ${firstId} · GPT-6.2-Astra high · Context 25% used · ${firstPart}`,
+      `${secondPart} · 0.170.0`,
+      '  ← for agents · ? for shortcuts',
+    ], abbreviated(firstId), 0);
+    assert.deepEqual(folded?.taskProgress, { completed: 1, total: 3 });
+    assert.equal(folded?.contextPercent, 25);
+    assert.equal(folded?.version, '0.170.0');
+  }
+  assert.equal(inspectFooter([
+    '› Ask Codex to do anything',
+    '',
+    `  ${firstId} · GPT-6.2-Astra high · Tasks 1/`,
+    '  unknown · 0.170.0',
+  ], abbreviated(firstId), 0), undefined);
 });
 
 test('keeps the live input and HUD together through typing, picker, thread change and resize', { timeout: 15000 }, async t => {
@@ -185,7 +203,7 @@ function frameFixture(firstFrame = 'composer()') {
       const chunks = columns <= 42 ? (queue ? ['  ' + id + ' ·', '  gpt-5.4 high · Context 0% used · 0.171.0']
         : ['  ' + id, '  gpt-5.4 high · Context 0% used ·', '  0.171.0'])
         : columns <= 51 ? ['  ' + id + ' · gpt-5.4', '  high · Context 0% used · 0.171.0']
-        : ['  ' + id + ' · gpt-5.4 high · Context 0% used ·', '  0.171.0'];
+        : ['  ' + id + ' · gpt-5.4 high · Tasks 1/', '  3 · Context 0% used · 0.171.0'];
       const controls = queue ? '  tab to queue message'
         : columns <= 42 ? '  ? for shortcuts' : columns <= 51 ? '  ← for agents' : shortcuts;
       const first = bottom - chunks.length + Number(shutdown);
@@ -304,35 +322,37 @@ test('keeps the startup HUD when a narrow terminal shows only the agents shortcu
 });
 
 const foldedHud = `
-  initialHud({ model, reasoning, contextPercent, version }) {
-    return model + ' ' + reasoning + ' │ v' + version + '\\nContext: ' + contextPercent + '%\\nMemory 30%\\nWorkspace';
+  initialHud({ model, reasoning, contextPercent, version, taskProgress }) {
+    const tasks = taskProgress ? ' │ Tasks ' + taskProgress.completed + '/' + taskProgress.total : '';
+    return model + ' ' + reasoning + ' │ v' + version + tasks + '\\nContext: ' + contextPercent + '%\\nMemory 30%\\nWorkspace';
   },
   async readHud() { return ''; },
 `;
 
 for (const columns of [42, 51, 76]) {
   test(`replaces all folded footer rows at ${columns} columns through mouse input and shutdown`, { timeout: 6000 }, async t => {
+    const expectedHeader = columns === 76 ? 'gpt-5.4 high │ v0.171.0 │ Tasks 1/3' : 'gpt-5.4 high │ v0.171.0';
     const terminal = hostFixture(t, frameFixture('folded()'), foldedHud, columns, 17);
     const initial = await terminal.observe(lines => lines.some(line => line.includes('for agents') || line.includes('for shortcuts')));
-    assert.ok(initial.includes('gpt-5.4 high │ v0.171.0'));
+    assert.ok(initial.includes(expectedHeader));
     assert.ok(initial.includes('Context: 0%'));
-    assert.ok(!initial.some(line => /^(?:high · Context|0\.171\.0$)/u.test(line)));
+    assert.ok(!initial.some(line => /^(?:high · Context|0\.171\.0$|3 · Context)/u.test(line)));
     const prompt = initial.indexOf('› Ask Codex to do anything');
     const innerPrompt = columns === 42 ? 12 : 13;
     terminal.outer.write('\x1b[<0;3;' + (prompt + 1) + 'M');
     await terminal.observe(lines => lines.includes('› mouse ' + innerPrompt));
     terminal.outer.write('k');
     const queued = await terminal.observe(lines => lines.includes('tab to queue message'));
-    assert.ok(queued.includes('gpt-5.4 high │ v0.171.0'));
+    assert.ok(queued.includes(expectedHeader));
     assert.ok(queued.includes('› hello'));
     terminal.outer.write('v');
     const working = await terminal.observe(lines => lines.some(line => line.includes('Working (2m')));
-    assert.ok(working.includes('gpt-5.4 high │ v0.171.0'));
-    assert.ok(!working.some(line => /^(?:high · Context|0\.171\.0$)/u.test(line)));
+    assert.ok(working.includes(expectedHeader));
+    assert.ok(!working.some(line => /^(?:high · Context|0\.171\.0$|3 · Context)/u.test(line)));
     terminal.outer.write('\x03');
     const shutdown = await terminal.observe(lines => lines.includes('› Shutting down...'));
-    assert.ok(shutdown.includes('gpt-5.4 high │ v0.171.0'));
-    assert.ok(!shutdown.some(line => /^(?:high · Context|0\.171\.0$)/u.test(line)));
+    assert.ok(shutdown.includes(expectedHeader));
+    assert.ok(!shutdown.some(line => /^(?:high · Context|0\.171\.0$|3 · Context)/u.test(line)));
     assert.equal((await terminal.result).exitCode, 7);
     assert.ok(!terminal.painted().includes(firstId));
   });
