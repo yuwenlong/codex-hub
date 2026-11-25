@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawn as spawnChild } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { closePtyHandle, inspectFooter, isDefaultProcessTitle, resolveObservedTitle } from '../lib/terminal-host.mjs';
@@ -120,25 +123,37 @@ test('keeps the live input and HUD together through typing, picker, thread chang
     href => `\x1b]8;;${href}\x1b\\ignored${closedLink}`,
   ).join(' ');
   const idleHud = `\x1b[34m[one]\x1b[0m │ ${invalidLinks} ${workspaceLink}project\n上下文 ░░░ 0%\n内存 ▓░░ 30%`;
-  const { outer, screen, result, rows, observe, painted } = hostFixture(t, fixture, `
+  // A Windows pseudoconsole can re-encode the display and drop OSC 8.
+  const traceDirectory = await mkdtemp(join(tmpdir(), 'codex-hud terminal trace '));
+  const trace = join(traceDirectory, 'stdout');
+  const { outer, screen, result, rows, observe } = hostFixture(t, fixture, `
     async readHud({ threadId }) {
       if (threadId === ${JSON.stringify(secondId)}) await new Promise(resolve => setTimeout(resolve, 160));
       return threadId === ${JSON.stringify(firstId)} ? ${JSON.stringify(idleHud)} : '[two] │ project\\n◐ agent running';
     }
-  `);
+  `, 100, 24, trace);
+  t.after(() => rm(traceDirectory, { force: true, recursive: true }));
 
   const idle = await observe(lines => lines.some(line => line.startsWith('[one]')));
   const prompt = idle.findIndex(line => line.includes('Ask Codex'));
   const hud = idle.findIndex(line => line.startsWith('[one]'));
   assert.ok(prompt >= 0 && hud === prompt + 2, idle.join('\n'));
+  assert.match(idle[hud], /\bproject\b/u);
   assert.match(idle[hud + 3], /for shortcuts/u);
   assert.doesNotMatch(idle.join('\n'), new RegExp(firstId, 'u'));
   assert.equal(screen.buffer.active.getLine(hud).getCell(0).getFgColor(), 4);
-  assert.ok(painted().includes(workspaceLink + 'project' + closedLink));
-  assert.doesNotMatch(painted(), /example\.invalid/u);
+  const written = await readFile(trace, 'utf8');
+  assert.ok(written.includes(workspaceLink + 'project' + closedLink));
+  assert.doesNotMatch(written, /example\.invalid/u);
 
-  outer.write('\x1b[<0;3;');
-  outer.write((prompt + 1) + 'M');
+  const mouse = '\x1b[<0;3;';
+  const promptClick = (prompt + 1) + 'M';
+  // The outer Windows ConPTY discards an incomplete SGR packet sent in a separate write.
+  if (process.platform === 'win32') outer.write(mouse + promptClick);
+  else {
+    outer.write(mouse);
+    outer.write(promptClick);
+  }
   await observe(lines => lines.some(line => line === '› mouse 21'));
   outer.write('\x1b[<0;3;' + (hud + 1) + 'M');
   await delay(50);
@@ -1277,12 +1292,20 @@ test('flushes lone Esc after paintDelay and buffers split bracketed paste sequen
   assert.equal(await done, 0);
 });
 
-function hostFixture(t, fixture, readers, cols = 100, height = 24) {
+function hostFixture(t, fixture, readers, cols = 100, height = 24, trace) {
   const { spawn } = require('node-pty');
   const { Terminal } = require('@xterm/headless');
   const url = new URL('../lib/terminal-host.mjs', import.meta.url).href;
   const outerCode = `
     import { runTerminal } from ${JSON.stringify(url)};
+    ${trace ? `
+      import { appendFileSync } from 'node:fs';
+      const write = process.stdout.write;
+      process.stdout.write = function (chunk, ...args) {
+        appendFileSync(${JSON.stringify(trace)}, chunk);
+        return write.call(this, chunk, ...args);
+      };
+    ` : ''}
     process.exitCode = await runTerminal({
       file: process.execPath,
       args: ['-e',${JSON.stringify(fixture)}],

@@ -34,9 +34,13 @@ readline.createInterface({input: createReadStream(null, { fd: 0 })}).on('line', 
 })
 `
 
-async function fixture(t) {
+async function fixture(t, { experimentalApi = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'codex-hud path with spaces '))
-  t.after(() => rm(directory, { force: true, recursive: true }))
+  let client
+  t.after(async () => {
+    await client?.close()
+    await rm(directory, { force: true, recursive: true })
+  })
   const env = { ...process.env, PATH: directory }
   if (process.platform === 'win32') {
     const bin = join(directory, 'node_modules', '@openai', 'codex', 'bin')
@@ -52,13 +56,13 @@ async function fixture(t) {
     env.CODEX_HUD_TEST_NODE = process.execPath
     env.CODEX_HUD_TEST_SERVER = script
   }
-  return { cwd: directory, env }
+  const { openClient } = await import('../lib/app-server.mjs')
+  client = await openClient({ cwd: directory, env, experimentalApi })
+  return client
 }
 
 test('initializes over stdio and matches out-of-order replies', async t => {
-  const { openClient } = await import('../lib/app-server.mjs')
-  const client = await openClient(await fixture(t))
-  t.after(() => client.close())
+  const client = await fixture(t)
   assert.equal(client.codexVersion, '0.170.0')
   assert.equal(await client.request('capabilities'), null)
   const replies = await Promise.all([
@@ -81,16 +85,12 @@ test('initializes over stdio and matches out-of-order replies', async t => {
 })
 
 test('enables the experimental protocol only when requested', async t => {
-  const { openClient } = await import('../lib/app-server.mjs')
-  const client = await openClient({ ...await fixture(t), experimentalApi: true })
-  t.after(() => client.close())
+  const client = await fixture(t, { experimentalApi: true })
   assert.deepEqual(await client.request('capabilities'), { experimentalApi: true })
 })
 
 test('an optional request can time out while the app server stays open', { timeout: 1500 }, async t => {
-  const { openClient } = await import('../lib/app-server.mjs')
-  const client = await openClient(await fixture(t))
-  t.after(() => client.close())
+  const client = await fixture(t)
   await assert.rejects(client.request('hold', undefined, { timeoutMs: 20 }), /hold timed out/u)
   assert.equal(await client.request('capabilities'), null)
 })

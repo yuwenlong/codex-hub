@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import test from 'node:test';
 import { createLaunchHud, interactiveOptions } from '../lib/launch.mjs';
+import { closePtyHandle } from '../lib/terminal-host.mjs';
 import { runCli } from './run-cli.mjs';
 
 const firstThread = '01a1ee97-bbc8-7382-995e-b80b8d24ad74';
@@ -97,15 +98,24 @@ test('an unavailable PTY dependency falls back before changing Codex arguments o
   async function launchFixture() {
     const pty = spawn(process.execPath, [cli, 'launch', '--', ...nativeArgs], { cwd, env, name: env.TERM, cols: 100, rows: 24 });
     let output = '';
-    pty.onData(data => { output += data; });
-    const exit = await new Promise((resolveExit, reject) => {
-      const timer = setTimeout(() => {
-        pty.kill();
-        reject(new Error('Codex did not exit under the terminal'));
-      }, 7000);
-      pty.onExit(event => { clearTimeout(timer); resolveExit(event); });
-    });
-    return { ...exit, output };
+    const dataSubscription = pty.onData(data => { output += data; });
+    let timer;
+    let exitSubscription;
+    try {
+      const exit = await new Promise((resolveExit, reject) => {
+        exitSubscription = pty.onExit(resolveExit);
+        timer = setTimeout(() => {
+          try { pty.kill(); } catch {}
+          reject(new Error('Codex did not exit under the terminal'));
+        }, 7000);
+      });
+      return { ...exit, output };
+    } finally {
+      clearTimeout(timer);
+      exitSubscription?.dispose();
+      dataSubscription.dispose();
+      closePtyHandle(pty);
+    }
   }
   const xterm = join(cwd, 'node_modules', '@xterm', 'headless');
   const pty = join(cwd, 'node_modules', 'node-pty');
