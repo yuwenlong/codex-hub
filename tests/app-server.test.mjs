@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const server = String.raw`
 const { createReadStream, writeSync } = require('node:fs')
@@ -95,12 +97,91 @@ test('an optional request can time out while the app server stays open', { timeo
   assert.equal(await client.request('capabilities'), null)
 })
 
-test('explains when Codex is unavailable', async t => {
+async function inheritedStdoutFixture(t, initializeError) {
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hud inherited stdout '))
+  const release = join(cwd, 'release')
+  const done = join(cwd, 'done')
+  const pids = join(cwd, 'pids.json')
+  const script = join(cwd, 'launcher.cjs')
+  const holder = join(cwd, 'holder.cjs')
+  t.after(async () => {
+    if (existsSync(pids)) {
+      await writeFile(release, '')
+      for (let attempt = 0; !existsSync(done); attempt++) {
+        assert.ok(attempt < 200, 'the fixture helper did not exit')
+        await delay(10)
+      }
+    }
+    await rm(cwd, { force: true, recursive: true })
+  })
+
+  await writeFile(holder, `
+    const { existsSync, mkdirSync } = require('node:fs')
+    const [release, done] = process.argv.slice(2)
+    process.on('exit', () => mkdirSync(done))
+    setInterval(() => { if (existsSync(release)) process.exit(0) }, 15)
+    setTimeout(() => process.exit(0), 4000)
+  `)
+  const response = initializeError
+    ? { error: { code: -32042, message: 'fixture refused initialization' } }
+    : { result: {} }
+  await writeFile(script, `
+    const { spawn } = require('node:child_process')
+    const { createReadStream, writeFileSync, writeSync } = require('node:fs')
+    const { dirname } = require('node:path')
+    const holder = spawn(process.execPath, [${JSON.stringify(holder)}, ${JSON.stringify(release)}, ${JSON.stringify(done)}], {
+      // The holder must survive the launcher's exit, including on Windows.
+      cwd: dirname(process.cwd()), detached: true, windowsHide: true, stdio: ['ignore', 'inherit', 'ignore'],
+    })
+    holder.unref()
+    writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid, holder.pid]))
+    require('node:readline').createInterface({ input: createReadStream(null, { fd: 0 }) }).on('line', line => {
+      const { id, method } = JSON.parse(line)
+      if (method === 'initialize') {
+        writeSync(1, JSON.stringify({ id, ...${JSON.stringify(response)} }) + '\\n')
+        if (${initializeError}) process.exit(0)
+      }
+    })
+  `)
+  const { openClient } = await import('../lib/app-server.mjs')
+  return {
+    connect: () => openClient({ cwd, codex: [process.execPath, [script]] }),
+    async assertProcesses() {
+      const [launcher, holder] = JSON.parse(await readFile(pids, 'utf8'))
+      assert.throws(() => process.kill(launcher, 0), { code: 'ESRCH' })
+      assert.equal(existsSync(done), false, 'the caller waited for the stdout holder')
+      assert.equal(process.kill(holder, 0), true)
+    },
+  }
+}
+
+test('returns an initialization error while a descendant still holds stdout', { timeout: 8000 }, async t => {
+  const fixture = await inheritedStdoutFixture(t, true)
+  await assert.rejects(fixture.connect(), {
+    code: -32042,
+    message: 'Codex initialize: fixture refused initialization',
+  })
+  await fixture.assertProcesses()
+})
+
+test('repeated close waits for the launcher and rejects requests while its descendant still holds stdout', { timeout: 8000 }, async t => {
+  const fixture = await inheritedStdoutFixture(t, false)
+  const client = await fixture.connect()
+  const pending = assert.rejects(client.request('hold'), /client closed/u)
+  await Promise.all([client.close(), client.close(), pending])
+  await fixture.assertProcesses()
+})
+
+test('explains when Codex cannot be resolved or spawned', async t => {
   const { openClient } = await import('../lib/app-server.mjs')
   const directory = await mkdtemp(join(tmpdir(), 'codex-hud empty PATH '))
   t.after(() => rm(directory, { force: true, recursive: true }))
   await assert.rejects(
     openClient({ cwd: directory, env: { ...process.env, PATH: directory } }),
     /Codex CLI.*PATH/u,
+  )
+  await assert.rejects(
+    openClient({ cwd: directory, codex: [join(directory, 'missing executable'), []] }),
+    { message: 'Codex CLI was not found on PATH. Install Codex CLI and reopen the terminal.' },
   )
 })
