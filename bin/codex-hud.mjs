@@ -153,9 +153,14 @@ async function main() {
     return;
   }
 
-  const { assertNoLegacyInstallation, install, uninstall, doctor } = await import('../lib/installation.mjs');
-  if (command === 'install') await assertNoLegacyInstallation(home);
-  const client = await connect(home);
+  const { install, uninstall, doctor } = await import('../lib/installation.mjs');
+  let connection;
+  const client = {
+    async request(method, params) {
+      connection ??= await connect(home);
+      return connection.request(method, params);
+    },
+  };
   try {
     if (command === 'install') {
       const { changed } = await install(client, home);
@@ -169,7 +174,7 @@ async function main() {
       printDoctor(await doctor(client, home));
     }
   } finally {
-    client.close();
+    connection?.close();
   }
 }
 

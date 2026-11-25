@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -52,6 +52,28 @@ test('native status line install detects a legacy backup before opening Codex', 
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /codex-hub-statusline\.json.*README/u);
   assert.equal(existsSync(join(home, 'codex-hud-statusline.json')), false);
+});
+
+test('native status line changes leave an existing shared lock intact and release their own lock', t => {
+  const temp = mkdtempSync(join(tmpdir(), 'codex hud shared lock '));
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const home = join(temp, 'home');
+  mkdirSync(home);
+  const env = { PATH: '', CODEX_HOME: home };
+  if (process.platform === 'win32') env.SystemRoot = process.env.SystemRoot;
+
+  for (const name of ['.codex-hub-runtime.lock', 'codex-hub-statusline.json.lock']) {
+    const path = join(home, name);
+    mkdirSync(path);
+    for (const command of ['install', 'uninstall']) {
+      const result = runCli(temp, [command], { env, timeout: 5000 });
+      assert.equal(result.status, 1, result.stderr);
+      assert.ok(result.stderr.includes(name), result.stderr);
+      assert.deepEqual(readdirSync(path), []);
+      assert.deepEqual(readdirSync(home), [name]);
+    }
+    rmSync(path, { recursive: true });
+  }
 });
 
 test('fresh Codex home reports empty state without creating the directory', (t) => {

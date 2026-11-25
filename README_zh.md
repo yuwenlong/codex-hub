@@ -60,32 +60,15 @@ Bash 和 Zsh 的在线命令会为运行它的 shell 配置启动入口。Window
 
 ## 从 Codex Hub 迁移
 
+如果从未安装过 Codex Hub，可直接[安装 Codex HUD](#在线安装)。
+
 先退出 Codex Hub 启动的 Codex 会话。迁移期间使用原来的 `CODEX_HOME`。如果用了自定义目录，请在 Bash 或 Zsh 中导出 `CODEX_HOME`，或在 PowerShell 中设定 `$env:CODEX_HOME`。如果该变量只在当前会话中生效，每次新开 shell 都要重新设置。
 
-旧版卸载器会在旧预设仍生效时还原备份，并保留后来手动修改的状态栏。Codex HUD 应用预设前会备份迁移后的状态栏。其余 Codex 配置和会话仍保存在原目录。如果希望原生 Codex 继续显示自定义状态栏，可在安装后重新设定 `tui.status_line`。
+从 [GitHub v0.2.6 发行包](https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip)运行旧版卸载器。这适用于所有旧版本和不完整的安装。下方命令会先核对发行包的 SHA-256。
 
-### v0.1.1 至 v0.2.6 的完整安装
+旧版卸载器会保留你另外放入旧运行目录的文件。旧预设仍生效时会还原状态栏备份，后来手动修改的值会保留。Codex HUD 应用预设前会备份迁移后的状态栏。其余 Codex 配置和会话仍保存在原目录。如果希望原生 Codex 继续显示自定义状态栏，可在安装后重新设定 `tui.status_line`。
 
-Bash 或 Zsh
-
-```bash
-if [ -n "${CODEX_HOME-}" ]; then export CODEX_HOME; fi
-node "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/manage.mjs" uninstall
-```
-
-PowerShell（平时从 CMD 启动也可使用）
-
-```powershell
-$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
-node (Join-Path $codexHome 'codex-hub\scripts\manage.mjs') uninstall
-if ($LASTEXITCODE -ne 0) { throw 'Codex Hub uninstall failed.' }
-```
-
-### v0.1.0、安装不完整或安装卸载曾中断
-
-使用 [v0.2.6 发行包](https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip)中的旧版卸载器。如果报错提示有锁，请先确认旧版安装器和卸载器均已退出。只删除报错指向的空锁目录，再重跑旧版卸载器。Bash 或 Zsh 可用 `rmdir`，PowerShell 可用 `[IO.Directory]::Delete('报错中的路径')`。
-
-Bash 或 Zsh
+### Bash 或 Zsh（Linux、macOS、WSL）
 
 ```bash
 (
@@ -93,13 +76,19 @@ Bash 或 Zsh
   if [ -n "${CODEX_HOME-}" ]; then export CODEX_HOME; fi
   legacy_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-hub-uninstall.XXXXXXXX")
   trap 'rm -rf -- "$legacy_dir"' EXIT
-  curl -fsSL --proto-redir '=https' 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip' -o "$legacy_dir/codex-hub.zip"
-  unzip -q "$legacy_dir/codex-hub.zip" -d "$legacy_dir"
+  archive="$legacy_dir/codex-hub.zip"
+  curl -fsSL --proto-redir '=https' 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip' -o "$archive"
+  node -e '
+    const archive = require("node:fs").readFileSync(process.argv[1]);
+    const hash = require("node:crypto").createHash("sha256").update(archive).digest("hex");
+    if (hash !== process.argv[2]) throw new Error("Codex Hub ZIP SHA-256 mismatch.");
+  ' "$archive" '27827ac50e32e7752096e64ffb4133f0d2feb26c9481801c08147c46ffb613da'
+  unzip -q "$archive" -d "$legacy_dir"
   node "$legacy_dir/codex-hub/scripts/manage.mjs" uninstall
 )
 ```
 
-PowerShell
+### PowerShell（也适用于从 CMD 启动的用户）
 
 ```powershell
 $legacyDir = Join-Path ([IO.Path]::GetTempPath()) ('codex-hub-uninstall-' + [guid]::NewGuid().ToString('N'))
@@ -107,6 +96,9 @@ $legacyDir = Join-Path ([IO.Path]::GetTempPath()) ('codex-hub-uninstall-' + [gui
 try {
     $archive = Join-Path $legacyDir 'codex-hub.zip'
     Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip' -OutFile $archive -ErrorAction Stop
+    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256 -ErrorAction Stop).Hash -ne '27827ac50e32e7752096e64ffb4133f0d2feb26c9481801c08147c46ffb613da') {
+        throw 'Codex Hub ZIP SHA-256 mismatch.'
+    }
     Expand-Archive -LiteralPath $archive -DestinationPath $legacyDir -ErrorAction Stop
     node (Join-Path $legacyDir 'codex-hub\scripts\manage.mjs') uninstall
     if ($LASTEXITCODE -ne 0) { throw 'Codex Hub uninstall failed.' }
@@ -115,7 +107,11 @@ try {
 }
 ```
 
-如果旧版卸载器提示启动块被改过，或新版安装器提示仍有旧启动块，先备份消息指出的启动文件，将其中自己的改动移出旧块，再删掉从对应的 `# >>> codex-hub … >>>` 到 `# <<< codex-hub … <<<` 的全部行（含这两行）。重跑旧版卸载器，让它清理原来的启动记录。
+如果被中断的操作留下了锁，请先确认所有新旧版安装和卸载进程都已退出。只删除报错指向的空锁目录。Bash 或 Zsh 可用 `rmdir`，PowerShell 可用 `[IO.Directory]::Delete('报错中的路径')`。旧版操作中断后重跑上述旧卸载器，若中断的是 Codex HUD 操作则重试原命令。
+
+多个 `CODEX_HOME` 可以共用一个启动文件。如果还有旧启动块，先用提示中的标记 ID 和启动文件路径核对各旧配置目录的 `.codex-hub-shell.json`。用记录匹配的 `CODEX_HOME` 运行旧卸载器。若卸载器报告块被编辑过，先备份启动文件，将自定义内容移到块外，再按该目录的记录还原原启动块并重试卸载。
+
+若要保留另一份旧安装，可为 Codex HUD 选用不同的 shell，或设置 `CODEX_HUD_SHELL=none` 后通过[显式入口](#诊断与显式启动)运行。只有确认某个块已无所属旧安装时，才在备份启动文件后手动清除该块。归属不明时请保留。
 
 旧版卸载成功后关闭旧 shell。在新 shell 中将自己配置的 `CODEX_HUB_*` 选项改名为 `CODEX_HUD_*`，再按[在线安装步骤](#在线安装)安装 Codex HUD。装好后重新打开 shell 并运行 `codex`。
 

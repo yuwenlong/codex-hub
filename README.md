@@ -60,32 +60,15 @@ If you keep an already-open terminal after an update and use a custom configurat
 
 ## Migrate from Codex Hub
 
+If you never installed Codex Hub, go straight to the [Codex HUD installer](#install-online).
+
 Exit your Codex Hub sessions before uninstalling. Use the same `CODEX_HOME` throughout the migration. For a custom directory, export `CODEX_HOME` in Bash or Zsh or set `$env:CODEX_HOME` in PowerShell. Set it again in each fresh shell if you configure it per session.
 
-The old uninstaller restores its saved status line if its preset is still in use and preserves later edits. Codex HUD saves the resulting status line before applying its preset. Your other Codex settings and sessions stay in the same directory. You can reapply a custom `tui.status_line` after installation to keep using it in native Codex.
+Run the old uninstaller from the [GitHub v0.2.6 release ZIP](https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip) for any Codex Hub version, including incomplete installations. The commands verify the ZIP's SHA-256 before extraction.
 
-### Complete installations of v0.1.1 through v0.2.6
+The old uninstaller keeps files you added separately to the old runtime directory. It restores its saved status line if its preset is still in use and preserves later edits. Codex HUD saves the resulting status line before applying its preset. Your other Codex settings and sessions stay in the same directory. You can reapply a custom `tui.status_line` after installation to keep using it in native Codex.
 
-Bash or Zsh
-
-```bash
-if [ -n "${CODEX_HOME-}" ]; then export CODEX_HOME; fi
-node "${CODEX_HOME:-$HOME/.codex}/codex-hub/scripts/manage.mjs" uninstall
-```
-
-PowerShell, including when you normally launch from CMD
-
-```powershell
-$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
-node (Join-Path $codexHome 'codex-hub\scripts\manage.mjs') uninstall
-if ($LASTEXITCODE -ne 0) { throw 'Codex Hub uninstall failed.' }
-```
-
-### v0.1.0, incomplete installations, and interrupted operations
-
-Use the old uninstaller from the [v0.2.6 release ZIP](https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip). If it reports a lock, confirm any old installer or uninstaller has exited. Remove only the empty lock directory named in the error, then rerun the old uninstaller. Use `rmdir` in Bash or Zsh or `[IO.Directory]::Delete('path from the error')` in PowerShell.
-
-Bash or Zsh
+### Bash or Zsh (Linux, macOS, WSL)
 
 ```bash
 (
@@ -93,13 +76,19 @@ Bash or Zsh
   if [ -n "${CODEX_HOME-}" ]; then export CODEX_HOME; fi
   legacy_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-hub-uninstall.XXXXXXXX")
   trap 'rm -rf -- "$legacy_dir"' EXIT
-  curl -fsSL --proto-redir '=https' 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip' -o "$legacy_dir/codex-hub.zip"
-  unzip -q "$legacy_dir/codex-hub.zip" -d "$legacy_dir"
+  archive="$legacy_dir/codex-hub.zip"
+  curl -fsSL --proto-redir '=https' 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip' -o "$archive"
+  node -e '
+    const archive = require("node:fs").readFileSync(process.argv[1]);
+    const hash = require("node:crypto").createHash("sha256").update(archive).digest("hex");
+    if (hash !== process.argv[2]) throw new Error("Codex Hub ZIP SHA-256 mismatch.");
+  ' "$archive" '27827ac50e32e7752096e64ffb4133f0d2feb26c9481801c08147c46ffb613da'
+  unzip -q "$archive" -d "$legacy_dir"
   node "$legacy_dir/codex-hub/scripts/manage.mjs" uninstall
 )
 ```
 
-PowerShell
+### PowerShell (also for CMD users)
 
 ```powershell
 $legacyDir = Join-Path ([IO.Path]::GetTempPath()) ('codex-hub-uninstall-' + [guid]::NewGuid().ToString('N'))
@@ -107,6 +96,9 @@ $legacyDir = Join-Path ([IO.Path]::GetTempPath()) ('codex-hub-uninstall-' + [gui
 try {
     $archive = Join-Path $legacyDir 'codex-hub.zip'
     Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip' -OutFile $archive -ErrorAction Stop
+    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256 -ErrorAction Stop).Hash -ne '27827ac50e32e7752096e64ffb4133f0d2feb26c9481801c08147c46ffb613da') {
+        throw 'Codex Hub ZIP SHA-256 mismatch.'
+    }
     Expand-Archive -LiteralPath $archive -DestinationPath $legacyDir -ErrorAction Stop
     node (Join-Path $legacyDir 'codex-hub\scripts\manage.mjs') uninstall
     if ($LASTEXITCODE -ne 0) { throw 'Codex Hub uninstall failed.' }
@@ -115,7 +107,11 @@ try {
 }
 ```
 
-If the old uninstaller reports an edited launcher block or the new installer reports a leftover block, back up the startup file named in the message. Move any of your edits out of the block and remove only the lines between and including the matching `# >>> codex-hub … >>>` and `# <<< codex-hub … <<<` markers. Rerun the old uninstaller to clear its shell record.
+If an interrupted operation left a lock, confirm that all old and new installers and uninstallers have exited. Remove only the empty lock directory named in the error. Use `rmdir` in Bash or Zsh or `[IO.Directory]::Delete('path from the error')` in PowerShell. For an interrupted Codex Hub operation, rerun the old uninstaller above. For an interrupted Codex HUD operation, retry that command.
+
+Several `CODEX_HOME` directories can share a startup file. If an old launcher block remains, match the reported marker ID and startup file path against `.codex-hub-shell.json` in the old Codex homes. Run the old uninstaller with the `CODEX_HOME` whose record matches. If it reports an edited block, back up the profile, move your edits outside the block, restore the original block from the owning record, and retry the uninstall.
+
+To keep another Codex Hub installation, configure Codex HUD for a different shell or set `CODEX_HUD_SHELL=none` and use the [explicit launcher](#diagnostics-and-explicit-launcher). Back up the profile and remove a block by hand only after confirming it no longer belongs to any installation. Leave it in place if ownership is unclear.
 
 After the old uninstaller succeeds, close the old shell. In a fresh shell, rename any `CODEX_HUB_*` options you set in your own configuration to `CODEX_HUD_*`, then follow the [Codex HUD installation steps](#install-online). Open a new shell after installation and run `codex`.
 

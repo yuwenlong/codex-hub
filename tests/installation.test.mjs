@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -187,6 +187,9 @@ test('prevents uninstall from clearing the backup during install', async t => {
   await writing.promise
   try {
     await assert.rejects(uninstall(client, home), /in progress/u)
+    for (const name of ['.codex-hub-runtime.lock', 'codex-hub-statusline.json.lock']) {
+      await assert.rejects(mkdir(join(home, name)), { code: 'EEXIST' })
+    }
   } finally {
     release.resolve()
     await installation

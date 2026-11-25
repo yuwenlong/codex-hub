@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
@@ -13,6 +14,8 @@ import { shellInit } from '../lib/shell.mjs';
 const exec = promisify(execFile);
 const require = createRequire(import.meta.url);
 const rawBase = 'https://raw.githubusercontent.com/yuwenlong/codex-hud/main';
+const legacyRelease = 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip';
+const legacyChecksum = '27827ac50e32e7752096e64ffb4133f0d2feb26c9481801c08147c46ffb613da';
 const bashOnly = { skip: process.platform === 'win32' };
 const marker = '.codex-hud-managed';
 const transaction = '.codex-hud-transaction.json';
@@ -34,15 +37,15 @@ function managedRuntime(home) {
   return runtime;
 }
 
-function readmeCommand(entry, readme = 'README.md') {
+function readmeCommand(snippet, readme = 'README.md') {
   const docs = readFileSync(new URL(`../${readme}`, import.meta.url), 'utf8');
   const command = [...docs.matchAll(/^```bash\r?\n([\s\S]*?)\r?\n```$/gmu)]
-    .find(([, body]) => body.includes(`curl -fsSL ${rawBase}/${entry}`))?.[1];
-  assert.ok(command, `Missing Bash command for ${entry} in ${readme}`);
+    .find(([, body]) => body.includes(snippet))?.[1];
+  assert.ok(command, `Missing Bash command in ${readme}`);
   return command;
 }
 
-async function fixture(t, { managedShell = false } = {}) {
+async function fixture(t, { managedShell = false, legacy = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'codex-hud online 中文 '));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const bin = join(root, 'bin');
@@ -68,11 +71,12 @@ writeFileSync(join(runtime, 'lib', 'launch.mjs'), '');
 writeFileSync(join(runtime, 'bin', 'codex-hud.mjs'), 'console.log("HUD " + import.meta.url + " " + JSON.stringify(process.argv.slice(2)) + " HOME " + JSON.stringify(process.env.CODEX_HOME));');
 updateShellIntegration(home, 'install');
 ` : manager);
-  const archive = join(root, 'codex-hud.zip');
+  const archiveName = legacy ? 'codex-hub' : 'codex-hud';
+  const archive = join(root, archiveName + '.zip');
   const git = async (...args) => (await exec('git', args, { cwd: release })).stdout.trim();
   await git('init', '-q');
   await git('add', '.');
-  await git('archive', '--format=zip', '--prefix=codex-hud/', '--output', archive, await git('write-tree'));
+  await git('archive', '--format=zip', `--prefix=${archiveName}/`, '--output', archive, await git('write-tree'));
 
   writeFileSync(join(bin, 'curl'), `#!/usr/bin/env bash
 args=()
@@ -98,6 +102,7 @@ for arg; do
       arg="$FIXTURE_UNINSTALL_URL"
       ;;
     https://github.com/yuwenlong/codex-hud/releases/latest/download/codex-hud.zip) arg="$FIXTURE_ARCHIVE_URL" ;;
+    ${legacyRelease}) arg="$FIXTURE_ARCHIVE_URL" ;;
   esac
   if [[ "$arg" == fixture:partial ]]; then partial=true; fi
   if [[ "$arg" == fixture:http ]]; then
@@ -146,19 +151,22 @@ exec "$FIXTURE_CURL" "\${args[@]}"
     FIXTURE_INSTALL_URL: new URL('../scripts/install.sh', import.meta.url).href,
     FIXTURE_UNINSTALL_URL: new URL('../uninstall.sh', import.meta.url).href,
   };
+  async function launchCommand(command, overrides) {
+    try {
+      const { stderr } = await exec('bash', ['-c', command], {
+        cwd: root, env: { ...env, ...overrides }, timeout: 20_000,
+      });
+      return { status: 0, stderr };
+    } catch (error) {
+      if (typeof error.code !== 'number') throw error;
+      return { status: error.code, stderr: error.stderr };
+    }
+  }
   return {
-    archive, env, home, root, temp,
-    async launch(entry, overrides, readme = 'README.md') {
-      const command = readmeCommand(entry, readme);
-      try {
-        const { stderr } = await exec('bash', ['-c', command], {
-          cwd: root, env: { ...env, ...overrides }, timeout: 20_000,
-        });
-        return { status: 0, stderr };
-      } catch (error) {
-        if (typeof error.code !== 'number') throw error;
-        return { status: error.code, stderr: error.stderr };
-      }
+    archive, env, home, root, temp, launchCommand,
+    launch(entry, overrides, readme = 'README.md') {
+      const command = readmeCommand(`curl -fsSL ${rawBase}/${entry}`, readme);
+      return launchCommand(command, overrides);
     },
     calls() {
       return existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse) : [];
@@ -188,6 +196,30 @@ async function interactiveShell(shell, cwd, env, command) {
   return output;
 }
 
+for (const readme of ['README.md', 'README_zh.md']) {
+  test(`${readme} migration runs the verified release manager and preserves an unmanaged namesake`, bashOnly, async t => {
+    const run = await fixture(t, { legacy: true });
+    const unmanaged = join(run.home, 'codex-hub', 'scripts', 'manage.mjs');
+    mkdirSync(dirname(unmanaged), { recursive: true });
+    writeFileSync(unmanaged, manager);
+    const command = readmeCommand('/codex-hub/scripts/manage.mjs" uninstall', readme);
+    const changedArchive = await run.launchCommand(command);
+    assert.notEqual(changedArchive.status, 0, changedArchive.stderr);
+    assert.match(changedArchive.stderr, /SHA-256/u);
+    assert.deepEqual(run.calls(), []);
+
+    const checksum = createHash('sha256').update(readFileSync(run.archive)).digest('hex');
+    const result = await run.launchCommand(command.replace(legacyChecksum, checksum));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(run.calls().length, 1);
+    const [[script, action]] = run.calls();
+    assert.equal(action, 'uninstall');
+    assert.ok(script.startsWith(run.temp + '/') && script.endsWith('/codex-hub/scripts/manage.mjs'), script);
+    assert.equal(readFileSync(unmanaged, 'utf8'), manager);
+    assert.deepEqual(readdirSync(run.temp), []);
+  });
+}
+
 test('Bash and Zsh online install commands activate Codex in the shell that ran them', { ...bashOnly, timeout: 25000 }, async t => {
   const readmes = [['/bin/bash', 'README.md'], ['/bin/zsh', 'README_zh.md']];
   const session = '12345678-1234-4321-9234-123456789012';
@@ -195,7 +227,7 @@ test('Bash and Zsh online install commands activate Codex in the shell that ran 
   for (const [shell, readme] of readmes) {
     if (!existsSync(shell)) continue;
     const { root, env } = await fixture(t, { managedShell: true });
-    const install = readmeCommand('scripts/install.sh', readme);
+    const install = readmeCommand(`curl -fsSL ${rawBase}/scripts/install.sh`, readme);
     const bash = shell.endsWith('/bash');
     const zshConfig = join(root, 'zsh config');
     mkdirSync(zshConfig);
@@ -245,7 +277,7 @@ test('Bash and Zsh online install commands activate Codex in the shell that ran 
 
 test('activation reports a legacy installation configured for a different shell', { ...bashOnly, timeout: 10000 }, async t => {
   const { env, root } = await fixture(t, { managedShell: true });
-  const install = readmeCommand('scripts/install.sh');
+  const install = readmeCommand(`curl -fsSL ${rawBase}/scripts/install.sh`);
   const output = await interactiveShell('/bin/bash', root, { ...env, SHELL: '/bin/zsh', ZDOTDIR: root, CODEX_HUD_SHELL: '' }, `
     CODEX_HUD_SHELL=zsh ${install}
     . "$CODEX_HOME/codex-hud/scripts/activate.sh"
@@ -262,7 +294,7 @@ test('exporting a custom home also works with a launcher already loaded before u
   const home = join(root, 'legacy custom home');
   mkdirSync(home);
   const oldProfile = join(root, 'legacy profile');
-  const install = readmeCommand('scripts/install.sh');
+  const install = readmeCommand(`curl -fsSL ${rawBase}/scripts/install.sh`);
   for (const dialect of ['bash', 'zsh']) {
     const shell = `/bin/${dialect}`;
     if (!existsSync(shell)) continue;
@@ -285,7 +317,7 @@ test('online activation preserves custom shell commands and honors skipped integ
   const shell = '/bin/bash';
   const run = await fixture(t, { managedShell: true });
   const env = { ...run.env, SHELL: shell, CODEX_HUD_SHELL: '' };
-  const install = readmeCommand('scripts/install.sh');
+  const install = readmeCommand(`curl -fsSL ${rawBase}/scripts/install.sh`);
   const activate = '. "${CODEX_HOME:-$HOME/.codex}/codex-hud/scripts/activate.sh"';
   const custom = await interactiveShell(shell, run.root, env, `
     codex() { printf 'CUSTOM %s\\n' "$1"; }

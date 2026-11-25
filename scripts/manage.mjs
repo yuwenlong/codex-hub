@@ -145,7 +145,7 @@ async function configure(directory, home, command, { publish, upgrade = false, e
   };
   try {
     const result = await installation[command](client, home, {
-      upgrade, publish: publish ?? (() => {}), trackBackup: command === 'uninstall' && Boolean(publish), expectedBackupId,
+      upgrade, publish: publish ?? (() => {}), trackBackup: command === 'uninstall' && Boolean(publish), expectedBackupId, locksHeld: true,
     });
     if (result.changed) {
       console.log(command === 'install'
@@ -407,20 +407,9 @@ async function main() {
   if (command === 'install') mkdirSync(configuredHome, { recursive: true, mode: 0o700 });
   else if (!inspect(configuredHome)) return;
   const home = realpathSync(configuredHome);
-  const lock = join(home, '.codex-hud-runtime.lock');
-  try {
-    mkdirSync(lock, { mode: 0o700 });
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    // shortcut: forced interruption may leave an empty lock directory.
-    throw new Error(`另一项 Codex HUD 安装或卸载正在进行。确认进程已退出后可删除空锁目录：${lock}`);
-  }
-  try {
-    if (command === 'install') {
-      const { assertNoLegacyInstallation } = await import(pathToFileURL(installationPath(source)));
-      await assertNoLegacyInstallation(home);
-      assertNoLegacyShellIntegration();
-    }
+  const { withInstallationLocks } = await import(pathToFileURL(installationPath(source)));
+  await withInstallationLocks(home, command, async () => {
+    if (command === 'install') assertNoLegacyShellIntegration();
     await manage(home, command);
     updateShellIntegration(home, command);
     if (command === 'install') {
@@ -438,9 +427,7 @@ async function main() {
         console.log('请使用 README 中的显式启动命令打开 Codex HUD。');
       }
     }
-  } finally {
-    rmdirSync(lock);
-  }
+  });
 }
 
 try {

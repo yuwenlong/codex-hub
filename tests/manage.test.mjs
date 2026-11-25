@@ -11,6 +11,7 @@ import { STATUS_LINE } from '../lib/installation.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const backupName = 'codex-hud-statusline.json';
 const transactionName = '.codex-hud-transaction.json';
+const sharedLockNames = ['.codex-hub-runtime.lock', 'codex-hub-statusline.json.lock'];
 const legacyStatusLine = [
   'model-with-reasoning', 'project-name', 'git-branch', 'context-used',
   'five-hour-limit', 'weekly-limit', 'task-progress',
@@ -125,8 +126,49 @@ for (const [state, contents] of [
     assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
     if (contents === null) assert.deepEqual(await readdir(path), []);
     else assert.equal(await readFile(path, 'utf8'), contents);
+    for (const name of sharedLockNames.filter(name => name !== state)) {
+      await assert.rejects(lstat(join(home, name)), { code: 'ENOENT' });
+    }
   });
 }
+
+test('keeps both shared locks from migration preflight through profile publication', {
+  skip: !bundledHost,
+}, async t => {
+  const { temp, home, config, original, run, manage } = await fixture(t);
+  const resolvedHome = await realpath(home);
+  const profile = join(temp, '.zshrc');
+  const preload = join(temp, 'observe locks.cjs');
+  const paths = sharedLockNames.map(name => join(resolvedHome, name));
+  await writeFile(preload, `
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { lstat } = fs.promises;
+const { linkSync } = fs;
+function checkLocks() {
+  for (const path of ${JSON.stringify(paths)}) {
+    assert.ok(fs.lstatSync(path, { throwIfNoEntry: false })?.isDirectory(), 'expected lock: ' + path);
+  }
+}
+fs.promises.lstat = (path, options) => {
+  if (path === ${JSON.stringify(join(resolvedHome, 'codex-hub-statusline.json'))}) checkLocks();
+  return lstat(path, options);
+};
+fs.linkSync = (from, to) => {
+  if (to === ${JSON.stringify(profile)}) checkLocks();
+  return linkSync(from, to);
+};
+require('node:module').syncBuiltinESMExports();
+`);
+  const additionalEnv = { HOME: temp, ZDOTDIR: temp, CODEX_HUD_SHELL: 'zsh' };
+  assertSuccess(run(join(root, 'scripts', 'manage.mjs'), ['install'], additionalEnv, ['--require', preload]));
+  assert.match(await readFile(profile, 'utf8'), /^# >>> codex-hud /mu);
+  for (const path of paths) await assert.rejects(lstat(path), { code: 'ENOENT' });
+
+  assertSuccess(manage('uninstall'));
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
+  for (const path of paths) await assert.rejects(lstat(path), { code: 'ENOENT' });
+});
 
 test('installs and uninstalls with user files left in the old runtime', { skip: !bundledHost }, async t => {
   const { home, config, original, manage } = await fixture(t);
@@ -164,6 +206,35 @@ test('blocks migration when a launcher block remains without its legacy shell re
     await assert.rejects(lstat(join(home, '.codex-hud-shell.json')), { code: 'ENOENT' });
     assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
   }
+});
+
+test('an old launcher owned by a second home can stay in a shared Zsh profile', { skip: !bundledHost }, async t => {
+  const { temp, home, runtime, config, original, manage } = await fixture(t);
+  const profile = join(temp, '.zshrc');
+  const peer = join(temp, 'another Codex home');
+  const record = join(peer, '.codex-hub-shell.json');
+  const marker = '1234567890abcdef';
+  const block = `# >>> codex-hub ${marker} >>>\n# other launcher\n# <<< codex-hub ${marker} <<<\n`;
+  const bytes = '# user settings\n' + block;
+  const state = JSON.stringify({ version: 1, entries: [{ path: profile, block }] });
+  const additionalEnv = { HOME: temp, ZDOTDIR: temp, CODEX_HUD_SHELL: 'zsh' };
+  await mkdir(peer);
+  await writeFile(record, state);
+  await writeFile(profile, bytes);
+  await assert.rejects(lstat(join(home, '.codex-hub-shell.json')), { code: 'ENOENT' });
+
+  const result = manage('install', { additionalEnv });
+  assert.equal(result.status, 1, result.output);
+  assert.ok(result.output.includes(marker), result.output);
+  assert.match(result.output, /CODEX_HOME.*CODEX_HUD_SHELL=none/u);
+  await assert.rejects(lstat(runtime), { code: 'ENOENT' });
+  assert.equal(await readFile(profile, 'utf8'), bytes);
+
+  assertSuccess(manage('install', { additionalEnv: { ...additionalEnv, CODEX_HUD_SHELL: 'none' } }));
+  assertSuccess(manage('uninstall'));
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
+  assert.equal(await readFile(profile, 'utf8'), bytes);
+  assert.equal(await readFile(record, 'utf8'), state);
 });
 
 test('installs the pinned terminal modules from the local package', { skip: !bundledHost }, async (t) => {
@@ -252,7 +323,7 @@ test('preserves a nested user file after upgrade and interrupted removal of bund
 
   const checkpoint = await interruptRuntimeRename(temp, home, 'uninstall', localFile);
   assert.equal(run(join(runtime, 'scripts', 'manage.mjs'), ['uninstall'], {}, checkpoint).status, 86);
-  await clearInterruptedLocks(home, backup);
+  await clearInterruptedLocks(home);
   assertSuccess(manage('uninstall'));
   assert.equal(await readFile(join(runtime, localFile), 'utf8'), 'local note');
   await assert.rejects(lstat(metadata), { code: 'ENOENT' });
@@ -317,9 +388,8 @@ require('node:module').syncBuiltinESMExports();
   return ['--require', checkpoint];
 }
 
-async function clearInterruptedLocks(home, backup) {
-  await rmdir(join(home, '.codex-hud-runtime.lock'));
-  await rmdir(`${backup}.lock`);
+async function clearInterruptedLocks(home) {
+  for (const name of sharedLockNames) await rmdir(join(home, name));
 }
 
 async function legacyInstallation(t) {
@@ -372,7 +442,7 @@ test('upgrades a v0.1.2 runtime with user dependency and license directories aft
   const checkpoint = await interruptRuntimeRename(temp, home, 'install', join('node_modules', 'unrelated'));
   const interrupted = run(join(root, 'scripts', 'manage.mjs'), ['install'], {}, checkpoint);
   assert.equal(interrupted.status, 86, interrupted.output);
-  await clearInterruptedLocks(home, backup);
+  await clearInterruptedLocks(home);
   assertSuccess(manage('install'));
   for (const [file, content] of files) assert.equal(await readFile(join(runtime, file), 'utf8'), content);
   const nativePackage = join(runtime, 'node_modules', 'node-pty', 'package.json');
@@ -480,7 +550,7 @@ test('uninstall restores the original footer when upgrade is interrupted at runt
   assert.equal(interrupted.status, 86, interrupted.output);
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, legacyStatusLine);
 
-  await clearInterruptedLocks(home, backup);
+  await clearInterruptedLocks(home);
   assertSuccess(manage('uninstall'));
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
   await assert.rejects(lstat(backup), { code: 'ENOENT' });
@@ -613,7 +683,7 @@ test('resumes a pending footer after the first install is interrupted at publica
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
   assert.deepEqual(JSON.parse(await readFile(backup, 'utf8')).original, original.tui.status_line);
 
-  await clearInterruptedLocks(home, backup);
+  await clearInterruptedLocks(home);
   assertSuccess(manage('install'));
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, STATUS_LINE);
   assertSuccess(manage('uninstall', { source: runtime }));
@@ -646,7 +716,7 @@ for (const withBackup of [true, false]) {
     } else await assert.rejects(lstat(backup), { code: 'ENOENT' });
     assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), installed);
 
-    await clearInterruptedLocks(home, backup);
+    await clearInterruptedLocks(home);
     assertSuccess(manage('uninstall'));
     for (const [file, contents] of files) assert.deepEqual(await readFile(join(runtime, file)), contents);
     assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), withBackup ? original : installed);
@@ -663,7 +733,7 @@ test('interrupted recovery preserves external entries that conflict with a move'
   await writeFile(join(runtime, note), 'user data');
   const checkpoint = await interruptRuntimeRename(temp, home, 'uninstall', note);
   assert.equal(run(join(runtime, 'scripts', 'manage.mjs'), ['uninstall'], {}, checkpoint).status, 86);
-  await clearInterruptedLocks(home, backup);
+  await clearInterruptedLocks(home);
   await mkdir(runtime);
   await writeFile(join(runtime, note), 'outside data');
   const result = manage('uninstall');
@@ -709,7 +779,7 @@ require('node:module').syncBuiltinESMExports();
   await assert.rejects(lstat(backup), { code: 'ENOENT' });
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
 
-  await rmdir(join(home, '.codex-hud-runtime.lock'));
+  await clearInterruptedLocks(home);
   assertSuccess(manage('install'));
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, STATUS_LINE);
   assert.equal(await readFile(note, 'utf8'), 'user data');
@@ -745,12 +815,12 @@ require('node:module').syncBuiltinESMExports();
       await assert.rejects(lstat(runtime), { code: 'ENOENT' });
     }
 
-    await clearInterruptedLocks(home, backup);
+    await clearInterruptedLocks(home);
     if (withExtras) {
       const interruptedAgain = run(join(root, 'scripts', 'manage.mjs'), ['install'], {}, ['--require', preload]);
       assert.equal(interruptedAgain.status, 86, interruptedAgain.output);
       assert.equal((await lstat(join(home, transactionName))).isFile(), true);
-      await clearInterruptedLocks(home, backup);
+      await clearInterruptedLocks(home);
     }
     assertSuccess(manage('install'));
     assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, STATUS_LINE);
@@ -783,7 +853,7 @@ require('node:module').syncBuiltinESMExports();
     const interrupted = run(join(runtime, 'scripts', 'manage.mjs'), ['uninstall'], {}, ['--require', preload]);
     assert.equal(interrupted.status, 86, interrupted.output);
     await assert.rejects(lstat(backup), { code: 'ENOENT' });
-    await rmdir(join(home, '.codex-hud-runtime.lock'));
+    await clearInterruptedLocks(home);
 
     if (!withBackup) await writeFile(config, JSON.stringify(original));
     assertSuccess(run(join(root, 'bin', 'codex-hud.mjs'), ['install']));
@@ -805,15 +875,14 @@ for (const duringCopy of [true, false]) {
     const preload = join(temp, 'interrupt preparation.cjs');
     await writeFile(preload, `
 const fs = require('node:fs');
-const { copyFileSync } = fs;
-const { mkdir } = fs.promises;
+const { copyFileSync, writeFileSync } = fs;
 fs.copyFileSync = (...args) => {
   copyFileSync(...args);
   if (${duringCopy}) process.exit(86);
 };
-fs.promises.mkdir = async (path, options) => {
-  await mkdir(path, options);
-  if (require('node:path').basename(path) === ${JSON.stringify(`${backupName}.lock`)}) process.exit(86);
+fs.writeFileSync = (path, ...args) => {
+  writeFileSync(path, ...args);
+  if (require('node:path').basename(path) === '.codex-hud-managed') process.exit(86);
 };
 require('node:module').syncBuiltinESMExports();
 `);
@@ -829,8 +898,7 @@ require('node:module').syncBuiltinESMExports();
     const personal = join(next, 'untracked note.txt');
     if (duringCopy) await writeFile(personal, 'personal data');
 
-    if (duringCopy) await rmdir(join(home, '.codex-hud-runtime.lock'));
-    else await clearInterruptedLocks(home, backup);
+    await clearInterruptedLocks(home);
     assertSuccess(manage('uninstall'));
     await assert.rejects(lstat(marker), { code: 'ENOENT' });
     if (duringCopy) {
@@ -898,40 +966,31 @@ test('leaves a manual directory created during configuration intact', async (t) 
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
 });
 
-test('a failed online install preserves a concurrent manual install and its backup', async (t) => {
+test('a failed online publication preserves a previously installed manual backup', async t => {
   const { temp, home, runtime, config, backup, original, run } = await fixture(t);
-  const canonicalBackup = join(await realpath(home), backupName);
-  const preload = join(temp, 'concurrent install.cjs');
-  // End the manual install as the online process first inspects or locks its backup.
+  const cli = join(root, 'bin', 'codex-hud.mjs');
+  assertSuccess(run(cli, ['install']));
+  const saved = await readFile(backup, 'utf8');
+
+  const preload = join(temp, 'create runtime during preparation.cjs');
+  const transaction = join(await realpath(home), transactionName);
   await writeFile(preload, `
 const fs = require('node:fs');
-const { spawnSync } = require('node:child_process');
-const { syncBuiltinESMExports } = require('node:module');
-const { lstatSync } = fs;
-const { mkdir } = fs.promises;
-let ran = false;
-function manualInstall() {
-  if (ran) return;
-  ran = true;
-  const result = spawnSync(process.execPath, [${JSON.stringify(join(root, 'bin', 'codex-hud.mjs'))}, 'install'], { stdio: 'inherit' });
-  if (result.status !== 0) throw new Error('fixture manual install failed');
-  fs.mkdirSync(${JSON.stringify(runtime)});
-}
-fs.lstatSync = (path, options) => {
-  const result = lstatSync(path, options);
-  if (!result && path === ${JSON.stringify(canonicalBackup)}) manualInstall();
-  return result;
+const { renameSync } = fs;
+fs.renameSync = (from, to) => {
+  renameSync(from, to);
+  if (to === ${JSON.stringify(transaction)} && JSON.parse(fs.readFileSync(to, 'utf8')).phase === 'preparing') {
+    fs.mkdirSync(${JSON.stringify(runtime)});
+  }
 };
-fs.promises.mkdir = (path, options) => {
-  if (path === ${JSON.stringify(`${canonicalBackup}.lock`)}) manualInstall();
-  return mkdir(path, options);
-};
-syncBuiltinESMExports();
+require('node:module').syncBuiltinESMExports();
 `);
   const result = run(join(root, 'scripts', 'manage.mjs'), ['install'], {}, ['--require', preload]);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /非 Codex HUD 运行文件/);
+  assert.match(result.output, /非 Codex HUD 运行文件/u);
   assert.deepEqual(await readdir(runtime), []);
+  assert.equal(await readFile(backup, 'utf8'), saved);
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, STATUS_LINE);
-  assert.deepEqual(JSON.parse(await readFile(backup, 'utf8')).original, original.tui.status_line);
+  assertSuccess(run(cli, ['uninstall']));
+  assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
 });
