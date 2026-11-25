@@ -72,18 +72,17 @@ Bash 和 Zsh 的在线命令会为运行它的 shell 配置启动入口。Window
 
 ```bash
 (
-  set -e
-  if [ -n "${CODEX_HOME-}" ]; then export CODEX_HOME; fi
-  legacy_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-hub-uninstall.XXXXXXXX")
+  if [ -n "${CODEX_HOME-}" ]; then export CODEX_HOME || exit 1; fi
+  legacy_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-hub-uninstall.XXXXXXXX") || exit 1
   trap 'rm -rf -- "$legacy_dir"' EXIT
   archive="$legacy_dir/codex-hub.zip"
-  curl -fsSL --proto-redir '=https' 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip' -o "$archive"
+  curl -fsSL --proto-redir '=https' 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip' -o "$archive" || exit 1
   node -e '
     const archive = require("node:fs").readFileSync(process.argv[1]);
     const hash = require("node:crypto").createHash("sha256").update(archive).digest("hex");
     if (hash !== process.argv[2]) throw new Error("Codex Hub ZIP SHA-256 mismatch.");
-  ' "$archive" '27827ac50e32e7752096e64ffb4133f0d2feb26c9481801c08147c46ffb613da'
-  unzip -q "$archive" -d "$legacy_dir"
+  ' "$archive" '27827ac50e32e7752096e64ffb4133f0d2feb26c9481801c08147c46ffb613da' || exit 1
+  unzip -q "$archive" -d "$legacy_dir" || exit 1
   node "$legacy_dir/codex-hub/scripts/manage.mjs" uninstall
 )
 ```
@@ -107,7 +106,7 @@ try {
 }
 ```
 
-如果被中断的操作留下了锁，请先确认所有新旧版安装和卸载进程都已退出。只删除报错指向的空锁目录。Bash 或 Zsh 可用 `rmdir`，PowerShell 可用 `[IO.Directory]::Delete('报错中的路径')`。旧版操作中断后重跑上述旧卸载器，若中断的是 Codex HUD 操作则重试原命令。
+Codex Hub 和 Codex HUD 在修改同一个配置目录或启动文件时会使用同一套锁。如果被中断的操作留下了锁，请先确认所有新旧版安装和卸载进程都已退出。只删除报错指向的空锁目录。Bash 或 Zsh 可用 `rmdir`，PowerShell 可用 `[IO.Directory]::Delete('报错中的路径')`。旧版操作中断后重跑上述旧卸载器，若中断的是 Codex HUD 操作则重试原命令。
 
 多个 `CODEX_HOME` 可以共用一个启动文件。如果还有旧启动块，先用提示中的标记 ID 和启动文件路径核对各旧配置目录的 `.codex-hub-shell.json`。用记录匹配的 `CODEX_HOME` 运行旧卸载器。若卸载器报告块被编辑过，先备份启动文件，将自定义内容移到块外，再按该目录的记录还原原启动块并重试卸载。
 

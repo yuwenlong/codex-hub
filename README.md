@@ -72,18 +72,17 @@ The old uninstaller keeps files you added separately to the old runtime director
 
 ```bash
 (
-  set -e
-  if [ -n "${CODEX_HOME-}" ]; then export CODEX_HOME; fi
-  legacy_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-hub-uninstall.XXXXXXXX")
+  if [ -n "${CODEX_HOME-}" ]; then export CODEX_HOME || exit 1; fi
+  legacy_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-hub-uninstall.XXXXXXXX") || exit 1
   trap 'rm -rf -- "$legacy_dir"' EXIT
   archive="$legacy_dir/codex-hub.zip"
-  curl -fsSL --proto-redir '=https' 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip' -o "$archive"
+  curl -fsSL --proto-redir '=https' 'https://github.com/yuwenlong/codex-hud/releases/download/v0.2.6/codex-hub.zip' -o "$archive" || exit 1
   node -e '
     const archive = require("node:fs").readFileSync(process.argv[1]);
     const hash = require("node:crypto").createHash("sha256").update(archive).digest("hex");
     if (hash !== process.argv[2]) throw new Error("Codex Hub ZIP SHA-256 mismatch.");
-  ' "$archive" '27827ac50e32e7752096e64ffb4133f0d2feb26c9481801c08147c46ffb613da'
-  unzip -q "$archive" -d "$legacy_dir"
+  ' "$archive" '27827ac50e32e7752096e64ffb4133f0d2feb26c9481801c08147c46ffb613da' || exit 1
+  unzip -q "$archive" -d "$legacy_dir" || exit 1
   node "$legacy_dir/codex-hub/scripts/manage.mjs" uninstall
 )
 ```
@@ -107,7 +106,7 @@ try {
 }
 ```
 
-If an interrupted operation left a lock, confirm that all old and new installers and uninstallers have exited. Remove only the empty lock directory named in the error. Use `rmdir` in Bash or Zsh or `[IO.Directory]::Delete('path from the error')` in PowerShell. For an interrupted Codex Hub operation, rerun the old uninstaller above. For an interrupted Codex HUD operation, retry that command.
+Codex Hub and Codex HUD share locks for changes to the same Codex home or startup file. If an interrupted operation left a lock, confirm that all old and new installers and uninstallers have exited. Remove only the empty lock directory named in the error. Use `rmdir` in Bash or Zsh or `[IO.Directory]::Delete('path from the error')` in PowerShell. For an interrupted Codex Hub operation, rerun the old uninstaller above. For an interrupted Codex HUD operation, retry that command.
 
 Several `CODEX_HOME` directories can share a startup file. If an old launcher block remains, match the reported marker ID and startup file path against `.codex-hub-shell.json` in the old Codex homes. Run the old uninstaller with the `CODEX_HOME` whose record matches. If it reports an edited block, back up the profile, move your edits outside the block, restore the original block from the owning record, and retry the uninstall.
 

@@ -151,9 +151,10 @@ exec "$FIXTURE_CURL" "\${args[@]}"
     FIXTURE_INSTALL_URL: new URL('../scripts/install.sh', import.meta.url).href,
     FIXTURE_UNINSTALL_URL: new URL('../uninstall.sh', import.meta.url).href,
   };
-  async function launchCommand(command, overrides) {
+  async function launchCommand(command, overrides, shell = 'bash') {
     try {
-      const { stderr } = await exec('bash', ['-c', command], {
+      const args = shell.endsWith('/zsh') ? ['-f', '-c', command] : ['-c', command];
+      const { stderr } = await exec(shell, args, {
         cwd: root, env: { ...env, ...overrides }, timeout: 20_000,
       });
       return { status: 0, stderr };
@@ -203,10 +204,15 @@ for (const readme of ['README.md', 'README_zh.md']) {
     mkdirSync(dirname(unmanaged), { recursive: true });
     writeFileSync(unmanaged, manager);
     const command = readmeCommand('/codex-hub/scripts/manage.mjs" uninstall', readme);
-    const changedArchive = await run.launchCommand(command);
-    assert.notEqual(changedArchive.status, 0, changedArchive.stderr);
-    assert.match(changedArchive.stderr, /SHA-256/u);
-    assert.deepEqual(run.calls(), []);
+    for (const shell of ['/bin/bash', '/bin/zsh']) {
+      if (!existsSync(shell)) continue;
+      for (const guarded of [command, `if ${command}; then exit 0; else exit 1; fi`, `${command} || exit 1`]) {
+        const changedArchive = await run.launchCommand(guarded, {}, shell);
+        assert.equal(changedArchive.status, 1, `${shell} ran an unverified manager: ${changedArchive.stderr}`);
+        assert.match(changedArchive.stderr, /SHA-256/u);
+        assert.deepEqual(run.calls(), []);
+      }
+    }
 
     const checksum = createHash('sha256').update(readFileSync(run.archive)).digest('hex');
     const result = await run.launchCommand(command.replace(legacyChecksum, checksum));

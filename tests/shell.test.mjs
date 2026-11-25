@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn as subprocess, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -247,10 +248,48 @@ test('serializes two Codex homes sharing one profile and routes the active home'
   assert.equal(readFileSync(profile, 'utf8'), '# existing settings');
 });
 
+test('waits for the old installer before reading a shared Zsh profile', { ...posix, timeout: 10000 }, async t => {
+  const { root, home, env } = fixture(t, '/bin/zsh');
+  const profile = join(root, '.zshrc');
+  const initial = '# user settings\n';
+  const legacyBlock = '# >>> codex-hub 1234567890abcdef >>>\n# old launcher\n# <<< codex-hub 1234567890abcdef <<<\n';
+  const manifest = join(home, '.codex-hud-shell.json');
+  const legacyHome = join(root, 'other Codex home');
+  const legacyManifest = join(legacyHome, '.codex-hub-shell.json');
+  const queue = profile + '.codex-hub-tickets';
+  const ticket = join(queue, process.pid + '-' + randomUUID());
+  writeFileSync(profile, initial);
+  mkdirSync(queue);
+  mkdirSync(legacyHome);
+  writeFileSync(ticket, '1');
+
+  const workers = installerFixture(t, root, env, profile);
+  const worker = await workers.start(home, 'new-version');
+  try {
+    for (let i = 0; readdirSync(queue).length === 1; i++) {
+      assert.equal(worker.child.exitCode, null, 'installer did not wait on the legacy ticket');
+      assert.ok(i < 300, 'installer did not join the legacy ticket queue');
+      await delay(10);
+    }
+    assert.equal(readFileSync(profile, 'utf8'), initial);
+    assert.equal(existsSync(manifest), false);
+    const legacyRecord = JSON.stringify({ version: 1, entries: [{ path: profile, block: legacyBlock }] });
+    writeFileSync(legacyManifest, legacyRecord);
+    writeFileSync(profile, initial + legacyBlock);
+  } finally {
+    rmSync(ticket);
+  }
+
+  assert.deepEqual(await worker.exit, { status: 0, signal: null });
+  assert.equal(readFileSync(profile, 'utf8'), initial + legacyBlock);
+  assert.equal(JSON.parse(readFileSync(legacyManifest, 'utf8')).entries[0].block, legacyBlock);
+  assert.equal(existsSync(manifest), false);
+});
+
 test('reclaims a profile ticket after a forced installer termination', { ...posix, timeout: 10000 }, async t => {
   const { root, home, env, change } = fixture(t);
   const profile = join(root, '.bashrc');
-  const queue = profile + '.codex-hud-tickets';
+  const queue = profile + '.codex-hub-tickets';
   writeFileSync(profile, '# existing settings\n');
   const workers = installerFixture(t, root, env, profile);
   const interrupted = await workers.start(home, 'interrupted', true);
