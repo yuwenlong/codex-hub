@@ -14,7 +14,8 @@ let capabilities = null
 function reply(response) {
   writeSync(1, JSON.stringify(response) + '\r\n')
 }
-readline.createInterface({input: createReadStream(null, { fd: 0 })}).on('line', line => {
+const lines = readline.createInterface({ input: createReadStream(null, { fd: 0 }) })
+lines.on('line', line => {
   const message = JSON.parse(line)
   const { id, method, params } = message
   if (method === 'initialize') {
@@ -36,7 +37,7 @@ readline.createInterface({input: createReadStream(null, { fd: 0 })}).on('line', 
 })
 `
 
-async function fixture(t, { experimentalApi = false } = {}) {
+async function fixture(t, { experimentalApi = false, source = server } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'codex-hud path with spaces '))
   let client
   t.after(async () => {
@@ -48,11 +49,11 @@ async function fixture(t, { experimentalApi = false } = {}) {
     const bin = join(directory, 'node_modules', '@openai', 'codex', 'bin')
     await mkdir(bin, { recursive: true })
     await writeFile(join(directory, 'codex.cmd'), '@exit /b 17\r\n')
-    await writeFile(join(bin, 'codex.js'), server)
+    await writeFile(join(bin, 'codex.js'), source)
   } else {
     const script = join(directory, 'app-server.cjs')
     const executable = join(directory, 'codex')
-    await writeFile(script, server)
+    await writeFile(script, source)
     await writeFile(executable, '#!/bin/sh\nexec "$CODEX_HUD_TEST_NODE" "$CODEX_HUD_TEST_SERVER" "$@"\n')
     await chmod(executable, 0o700)
     env.CODEX_HUD_TEST_NODE = process.execPath
@@ -60,11 +61,11 @@ async function fixture(t, { experimentalApi = false } = {}) {
   }
   const { openClient } = await import('../lib/app-server.mjs')
   client = await openClient({ cwd: directory, env, experimentalApi })
-  return client
+  return { client, directory }
 }
 
 test('initializes over stdio and matches out-of-order replies', async t => {
-  const client = await fixture(t)
+  const { client } = await fixture(t)
   assert.equal(client.codexVersion, '0.170.0')
   assert.equal(await client.request('capabilities'), null)
   const replies = await Promise.all([
@@ -87,14 +88,30 @@ test('initializes over stdio and matches out-of-order replies', async t => {
 })
 
 test('enables the experimental protocol only when requested', async t => {
-  const client = await fixture(t, { experimentalApi: true })
+  const { client } = await fixture(t, { experimentalApi: true })
   assert.deepEqual(await client.request('capabilities'), { experimentalApi: true })
 })
 
 test('an optional request can time out while the app server stays open', { timeout: 1500 }, async t => {
-  const client = await fixture(t)
+  const { client } = await fixture(t)
   await assert.rejects(client.request('hold', undefined, { timeoutMs: 20 }), /hold timed out/u)
   assert.equal(await client.request('capabilities'), null)
+})
+
+test('drains a final notification sent on EOF before the launcher exits', async t => {
+  const source = server + String.raw`
+    lines.once('close', () => {
+      setTimeout(() => {
+        const notice = { method: 'fixture/finished', params: { text: 'x'.repeat(1024 * 1024) } }
+        const bytes = Buffer.from(JSON.stringify(notice) + '\r\n')
+        for (let offset = 0; offset < bytes.length;) offset += writeSync(1, bytes, offset, bytes.length - offset)
+        require('node:fs').writeFileSync('shutdown.complete', 'clean')
+      }, 25)
+    })
+  `
+  const { client, directory } = await fixture(t, { source })
+  await client.close()
+  assert.equal(await readFile(join(directory, 'shutdown.complete'), 'utf8'), 'clean')
 })
 
 async function inheritedStdoutFixture(t, initializeError) {
