@@ -370,14 +370,23 @@ test('does not follow a substituted terminal dependency directory during uninsta
   assert.equal(await readFile(unrelated, 'utf8'), 'other data');
 });
 
+const renamePathComparison = `
+const { basename, dirname, join, relative } = require('node:path');
+function matchesRenamePath(path, expected) {
+  // Resolve the parent so the comparison works when the renamed entry is absent.
+  return relative(join(fs.realpathSync.native(dirname(path)), basename(path)), expected) === '';
+}
+`;
+
 async function interruptRuntimeRename(temp, home, command, extra) {
   const runtime = join(await realpath(home), 'codex-hud');
   const checkpoint = join(temp, 'interrupt.cjs');
   const condition = extra
     ? `to.endsWith(${JSON.stringify(join('next', extra))})`
-    : `${command === 'install' ? 'to' : 'from'} === ${JSON.stringify(runtime)}`;
+    : `matchesRenamePath(${command === 'install' ? 'to' : 'from'}, ${JSON.stringify(runtime)})`;
   await writeFile(checkpoint, `
 const fs = require('node:fs');
+${renamePathComparison}
 const { renameSync } = fs;
 fs.renameSync = (from, to) => {
   renameSync(from, to);
@@ -976,10 +985,11 @@ test('a failed online publication preserves a previously installed manual backup
   const transaction = join(await realpath(home), transactionName);
   await writeFile(preload, `
 const fs = require('node:fs');
+${renamePathComparison}
 const { renameSync } = fs;
 fs.renameSync = (from, to) => {
   renameSync(from, to);
-  if (to === ${JSON.stringify(transaction)} && JSON.parse(fs.readFileSync(to, 'utf8')).phase === 'preparing') {
+  if (matchesRenamePath(to, ${JSON.stringify(transaction)}) && JSON.parse(fs.readFileSync(to, 'utf8')).phase === 'preparing') {
     fs.mkdirSync(${JSON.stringify(runtime)});
   }
 };
