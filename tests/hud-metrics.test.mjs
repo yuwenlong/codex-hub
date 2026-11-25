@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { appendFile, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { readActivity } from '../lib/activity.mjs';
-import { readHudMetrics } from '../lib/hud-metrics.mjs';
+import { confirmedRecord, readHudMetrics } from '../lib/hud-metrics.mjs';
 
 const id = '1d6c11c9-f1c6-4d02-ae28-a8748071da01';
 const meta = JSON.stringify({ type: 'session_meta', payload: { id } });
@@ -50,20 +51,21 @@ const rateEpoch = Date.UTC(2026, 10, 18, 19, 10);
 const rateRecord = (time, type, payload) => JSON.stringify({ timestamp: new Date(rateEpoch + time).toISOString(), type, payload });
 const rateEvent = (time, type, payload) => rateRecord(time, 'event_msg', { type, ...payload });
 
-function timedReply(turnId, { start = 10_000, end = 11_000, messageId = 'msg-final', threadId = id } = {}) {
+function timedReply(turnId, { start = 10_000, end = 11_000, messageId = 'msg-final', threadId = id, phase } = {}) {
   const text = 'Fixture answer';
   return [rateEvent(end, 'item_completed', {
     turn_id: turnId, thread_id: threadId, started_at_ms: rateEpoch + start, completed_at_ms: rateEpoch + end,
     item: { type: 'AgentMessage', id: messageId, content: [{ type: 'Text', text }] },
   }), rateRecord(end + 1, 'response_item', {
     type: 'message', role: 'assistant', status: 'completed', id: messageId, content: [{ type: 'output_text', text }],
+    ...(phase && { phase }),
     internal_chat_message_metadata_passthrough: { turn_id: turnId },
   })];
 }
 
-function responseUsage(turnId, { responseId = 'resp-final', start = 11_005, output = 50, reasoning = 10 } = {}) {
+function responseUsage(turnId, { responseId = 'resp-final', start = 11_005, output = 50, reasoning = 10, threadId = id } = {}) {
   return rateRecord(start, 'token_usage_record', {
-    thread_id: id, turn_id: turnId, response_id: responseId,
+    thread_id: threadId, turn_id: turnId, response_id: responseId,
     usage: { input_tokens: 1800, cached_input_tokens: 1000, output_tokens: output, reasoning_output_tokens: reasoning },
     turn_token_usage: { output_tokens: 560 }, thread_token_usage: { output_tokens: 8000 },
   });
@@ -101,16 +103,24 @@ test('measures the final text response using its own output and item duration af
   assert.deepEqual(sample.outputRate, expected);
   assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, expected);
   assert.equal((await activity(turnId)).outputTokensPerSecond, 40);
-  assert.equal((await activity('turn-2')).outputTokensPerSecond, undefined);
+  assert.equal((await activity('turn-2')).outputTokensPerSecond, 40);
 
   const next = 'turn-2';
   await appendFile(path, [rateEvent(12_000, 'task_started', { turn_id: next }),
     rateRecord(12_001, 'response_item', { type: 'additional_tools', role: 'developer', tools: [] }), ''].join('\n'));
-  assert.equal((await readHudMetrics(null, thread, opts)).outputRate, undefined);
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, expected);
+  await appendFile(path, [
+    ...timedReply(next, { start: 12_100, end: 12_200, messageId: 'msg-tool-commentary', phase: 'commentary' }),
+    rateRecord(12_205, 'response_item', { type: 'function_call' }),
+    responseUsage(next, { responseId: 'resp-tool-2', start: 12_210, output: 120, reasoning: 0 }),
+    rateRecord(12_300, 'response_item', { type: 'function_call_output' }),
+    rateRecord(12_350, 'response_item', { type: 'reasoning' }), ''].join('\n'));
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, expected);
   await appendFile(path, [...timedReply(next, { start: 12_500, end: 13_250 }), ''].join('\n'));
   assert.equal((await readHudMetrics(null, thread, opts)).outputRate, undefined);
   await appendFile(path, responseUsage(next, { start: 13_255, output: 6, reasoning: 0 }) + '\n');
   assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, { turnId: next, tokensPerSecond: 8 });
+  assert.equal((await activity(next)).outputTokensPerSecond, 8);
 });
 
 test('omits output rates for incomplete, mixed, and uncorrelated response records', async t => {
@@ -120,10 +130,21 @@ test('omits output rates for incomplete, mixed, and uncorrelated response record
   const usage = responseUsage(turnId);
   const tool = rateRecord(9700, 'response_item', { type: 'function_call' });
   const aborted = rateEvent(12_000, 'turn_aborted', { turn_id: turnId });
+  const untimedMsg = rateRecord(8600, 'response_item', {
+    type: 'message', role: 'assistant', status: 'completed', id: 'msg-untimed',
+    content: [{ type: 'output_text', text: 'Fixture answer' }],
+    internal_chat_message_metadata_passthrough: { turn_id: turnId },
+  });
   const cases = [
     ['aggregated usage only', ...reply, tokenEvent({ total_token_usage: { output_tokens: 50 } }, null)],
     ['mixed tool call', tool, ...reply, usage],
-    ['multiple assistant items', ...timedReply(turnId, { start: 8500, end: 9000, messageId: 'msg-first' }), ...reply, usage],
+    ['overlapping assistant items', ...timedReply(turnId, { start: 8500, end: 10_500, messageId: 'msg-first' }), ...reply, usage],
+    ['out-of-order assistant items', ...reply, ...timedReply(turnId, { start: 8500, end: 9000, messageId: 'msg-earlier' }), usage],
+    ['untimed assistant item in multi-segment', untimedMsg, ...reply, usage],
+    ['tool output between assistant items', ...timedReply(turnId, { start: 8500, end: 9000, messageId: 'msg-first' }),
+      rateRecord(9500, 'response_item', { type: 'function_call_output' }), ...reply, usage],
+    ['mixed tool call across multiple assistant items',
+      ...timedReply(turnId, { start: 8500, end: 9000, messageId: 'msg-first', phase: 'commentary' }), tool, ...reply, usage],
     ['later usage with no matching text', ...reply, tokenEvent({ total_token_usage: { output_tokens: 50 } }, null), usage],
     ['later reasoning response', ...reply, rateRecord(11_003, 'response_item', { type: 'reasoning' }), usage],
     ['duplicate usage', ...reply, usage, usage],
@@ -144,6 +165,286 @@ test('omits output rates for incomplete, mixed, and uncorrelated response record
     assert.equal(metrics.outputRate, undefined, name);
     assert.equal(metrics.tokens?.output, 8000, name);
   }
+});
+
+test('measures combined commentary and final_answer segments within a single API response', async t => {
+  const { cwd, home, path } = await fixture(t);
+  const turnId = 'turn-1';
+  const records = [
+    meta,
+    rateEvent(0, 'task_started', { turn_id: turnId }),
+    rateRecord(8000, 'response_item', { type: 'reasoning' }),
+    ...timedReply(turnId, { start: 8500, end: 9000, messageId: 'msg-commentary', phase: 'commentary' }),
+    ...timedReply(turnId, { start: 10_000, end: 11_000, messageId: 'msg-final', phase: 'final_answer' }),
+    responseUsage(turnId, { start: 11_005, output: 40, reasoning: 10 }),
+    rateEvent(11_100, 'task_complete', { turn_id: turnId }),
+    '',
+  ];
+  await writeFile(path, records.join('\n'));
+  assert.deepEqual((await readHudMetrics(null, { id, path }, { cwd, home })).outputRate, { turnId, tokensPerSecond: 20 });
+
+  const adjacent = [
+    meta,
+    rateEvent(0, 'task_started', { turn_id: turnId }),
+    ...timedReply(turnId, { start: 8500, end: 10_000, messageId: 'msg-commentary', phase: 'commentary' }),
+    ...timedReply(turnId, { start: 10_000, end: 11_000, messageId: 'msg-final', phase: 'final_answer' }),
+    responseUsage(turnId, { start: 11_005, output: 40, reasoning: 10 }),
+    '',
+  ];
+  await writeFile(path, adjacent.join('\n'));
+  assert.deepEqual((await readHudMetrics(null, { id, path }, { cwd, home })).outputRate, { turnId, tokensPerSecond: 12 });
+});
+
+test('retains output rate across trailing subagent notifications, aborted follow-up turns, and large tool outputs beyond 512 KiB', async t => {
+  const { cwd, home, path } = await fixture(t);
+  const turnId = 'turn-1';
+  const thread = { id, path };
+  const opts = { cwd, home };
+  const initial = [
+    meta,
+    rateEvent(0, 'task_started', { turn_id: turnId }),
+    ...timedReply(turnId),
+    responseUsage(turnId),
+    tokenEvent({ total_token_usage: { output_tokens: 500 } }, null),
+    rateEvent(11_200, 'task_complete', { turn_id: turnId }),
+    rateRecord(11_300, 'response_item', {
+      type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: '<subagent_notification>done</subagent_notification>' }],
+    }),
+    rateRecord(11_310, 'response_item', { type: 'reasoning' }),
+    rateEvent(11_320, 'item_completed', { turn_id: turnId, thread_id: id, item: { type: 'CommandExecution', id: 'cmd-1' } }),
+    tokenEvent({ total_token_usage: { output_tokens: 500 } }, null),
+    '',
+  ];
+  await writeFile(path, initial.join('\n'));
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, { turnId, tokensPerSecond: 40 });
+
+  await appendFile(path, [
+    rateEvent(12_000, 'task_started', { turn_id: 'turn-2' }),
+    ...timedReply('turn-2', { start: 12_100, end: 12_200, messageId: 'msg-aborted' }),
+    rateEvent(12_300, 'turn_aborted', { turn_id: 'turn-2' }),
+    '',
+  ].join('\n'));
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, { turnId, tokensPerSecond: 40 });
+
+  const hugeOutput = rateRecord(13_000, 'response_item', { type: 'function_call_output', output: 'x'.repeat(540_000) });
+  await appendFile(path, [rateEvent(12_900, 'task_started', { turn_id: 'turn-3' }), hugeOutput, ''].join('\n'));
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, { turnId, tokensPerSecond: 40 });
+
+  await appendFile(path, [...timedReply('turn-3', { start: 13_100, end: 13_600 }), ''].join('\n'));
+  assert.equal((await readHudMetrics(null, thread, opts)).outputRate, undefined);
+
+  await writeFile(path, initial.join('\n'));
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, { turnId, tokensPerSecond: 40 });
+  await appendFile(path, [hugeOutput, rateEvent(13_500, 'turn_aborted', { turn_id: turnId }), ''].join('\n'));
+  assert.equal((await readHudMetrics(null, thread, opts)).outputRate, undefined);
+
+  await writeFile(path, initial.join('\n'));
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, { turnId, tokensPerSecond: 40 });
+  const replacement = path + '.replacement';
+  await writeFile(replacement, [meta, hugeOutput, ''].join('\n'));
+  await rename(replacement, path);
+  assert.equal((await readHudMetrics(null, thread, opts)).outputRate, undefined);
+});
+
+test('reads context-window rotated rollout filenames and enforces strict ownership validation', async t => {
+  const { home, cwd } = await fixture(t);
+  const sessions = join(home, 'sessions', '2026', '11', '20');
+  await mkdir(sessions, { recursive: true });
+  const windowId = '2d6c11c9-f1c6-4d02-ae28-a8748071da02';
+  const otherId = '3d6c11c9-f1c6-4d02-ae28-a8748071da03';
+  const rotatedPath = join(sessions, `rollout-2026-11-20T11-29-36-${id.toUpperCase()}_${windowId.toUpperCase()}.jsonl`);
+  const usageEvent = tokenEvent({ total_token_usage: { total_tokens: 1200, output_tokens: 300 } }, null);
+  await writeFile(rotatedPath, [
+    JSON.stringify({ type: 'session_meta', payload: { id: windowId.toUpperCase(), session_id: id } }),
+    rateEvent(0, 'task_started', { turn_id: 'turn-1' }),
+    ...timedReply('turn-1', { threadId: windowId.toUpperCase() }),
+    responseUsage('turn-1', { threadId: id }),
+    usageEvent,
+    '',
+  ].join('\n'));
+  const rotatedMetrics = await readHudMetrics(null, { id, path: rotatedPath }, { cwd, home });
+  assert.equal(rotatedMetrics.tokens?.total, 1200);
+  assert.deepEqual(rotatedMetrics.outputRate, { turnId: 'turn-1', tokensPerSecond: 40 });
+
+  await writeFile(rotatedPath, [
+    JSON.stringify({ type: 'session_meta', payload: { session_id: id } }),
+    usageEvent,
+    '',
+  ].join('\n'));
+  assert.equal((await readHudMetrics(null, { id, path: rotatedPath }, { cwd, home })).tokens?.total, 1200);
+
+  const foreignRotated = join(sessions, `rollout-2026-11-20T11-29-36-${otherId}_${windowId}.jsonl`);
+  for (const payload of [{ id: windowId, session_id: id }, { session_id: id }]) {
+    await writeFile(foreignRotated, [JSON.stringify({ type: 'session_meta', payload }), usageEvent, ''].join('\n'));
+    assert.equal((await readHudMetrics(null, { id, path: foreignRotated }, { cwd, home })).tokens, undefined);
+  }
+
+  for (const session_id of [otherId, '', 123]) {
+    await writeFile(rotatedPath, [
+      JSON.stringify({ type: 'session_meta', payload: { id: windowId.toUpperCase(), session_id } }),
+      rateEvent(0, 'task_started', { turn_id: 'turn-1' }),
+      ...timedReply('turn-1', { threadId: windowId.toUpperCase() }),
+      responseUsage('turn-1', { threadId: id }),
+      usageEvent,
+      '',
+    ].join('\n'));
+    const rejected = await readHudMetrics(null, { id, path: rotatedPath }, { cwd, home });
+    assert.equal(rejected.tokens, undefined);
+    assert.equal(rejected.outputRate, undefined);
+  }
+
+  await writeFile(rotatedPath, [
+    JSON.stringify({ type: 'session_meta', payload: { id: windowId.toUpperCase() } }),
+    rateEvent(0, 'task_started', { turn_id: 'turn-1' }),
+    ...timedReply('turn-1', { threadId: windowId.toUpperCase() }),
+    responseUsage('turn-1', { threadId: id }),
+    usageEvent,
+    '',
+  ].join('\n'));
+  const windowOnly = await readHudMetrics(null, { id, path: rotatedPath }, { cwd, home });
+  assert.equal(windowOnly.tokens?.total, 1200);
+  assert.deepEqual(windowOnly.outputRate, { turnId: 'turn-1', tokensPerSecond: 40 });
+});
+
+test('ignores empty thread IDs and malformed confirmedRecord positions or lengths', async t => {
+  const { cwd, home, path } = await fixture(t);
+  const sessions = join(home, 'sessions', '2026', '11', '18');
+  const emptyIdPath = join(sessions, 'rollout-2026-11-18T19-10-00-.jsonl');
+  const usageEvent = tokenEvent({ total_token_usage: { total_tokens: 900, output_tokens: 150 } }, null);
+  await writeFile(emptyIdPath, [
+    JSON.stringify({ type: 'session_meta', payload: { session_id: '' } }),
+    rateEvent(0, 'task_started', { turn_id: 'turn-1' }),
+    ...timedReply('turn-1', { threadId: '' }),
+    responseUsage('turn-1', { threadId: '' }),
+    usageEvent,
+    '',
+  ].join('\n'));
+  await writeFile(path, `${meta}\n${usageEvent}\n`);
+  for (const target of [emptyIdPath, path]) {
+    const metrics = await readHudMetrics(null, { id: '', path: target }, { cwd, home });
+    assert.equal(metrics.tokens, undefined);
+    assert.equal(metrics.outputRate, undefined);
+  }
+
+  const spyFile = { async read() { assert.fail('readFragment should not be called for invalid record bounds'); } };
+  for (const badRecord of [
+    null,
+    undefined,
+    { position: 0, length: 4, digest: 'x' },
+    { position: -1, length: 4, digest: 'x' },
+    { position: 1.5, length: 4, digest: 'x' },
+    { position: 1, length: -1, digest: 'x' },
+    { position: 1, length: Number.NaN, digest: 'x' },
+    { position: 1, length: Number.MAX_SAFE_INTEGER, digest: 'x' },
+    { position: 1, length: Number.MAX_SAFE_INTEGER - 1, digest: 'x' },
+    { position: 1, length: 512 * 1024 + 1, digest: 'x' },
+    { position: Number.MAX_SAFE_INTEGER, length: 11, digest: 'x' },
+  ]) {
+    assert.equal(await confirmedRecord(spyFile, badRecord), undefined);
+  }
+
+  const realPath = join(sessions, 'confirmed-bounds.jsonl');
+  await writeFile(realPath, '\n{"ok":true}\n');
+  const handle = await open(realPath, 'r');
+  t.after(() => handle.close());
+  const validDigest = createHash('sha256').update('{"ok":true}').digest('base64');
+  const validRecord = { position: 1, length: 11, digest: validDigest };
+  assert.equal(await confirmedRecord(handle, validRecord), validRecord);
+  assert.equal(await confirmedRecord(handle, { position: 1, length: 11, digest: 'wrong-digest' }), undefined);
+  assert.equal(await confirmedRecord(handle, {
+    position: 2, length: 10, digest: createHash('sha256').update('"ok":true}').digest('base64'),
+  }), undefined);
+  assert.equal(await confirmedRecord(handle, { position: 0, length: 11, digest: validDigest }), undefined);
+
+  const truncatedPath = join(sessions, 'confirmed-truncated.jsonl');
+  await writeFile(truncatedPath, '\n{"ok":true}');
+  const truncatedHandle = await open(truncatedPath, 'r');
+  t.after(() => truncatedHandle.close());
+  assert.equal(await confirmedRecord(truncatedHandle, validRecord), undefined);
+});
+
+test('allows Reasoning item_completed between commentary and final_answer while rejecting trailing Reasoning', async t => {
+  const { cwd, home, path } = await fixture(t);
+  const turnId = 'turn-1';
+  const interleaved = [
+    meta,
+    rateEvent(0, 'task_started', { turn_id: turnId }),
+    rateEvent(8000, 'item_completed', { turn_id: turnId, thread_id: id, item: { type: 'Reasoning', id: 'rs-0' } }),
+    ...timedReply(turnId, { start: 8500, end: 9000, messageId: 'msg-commentary', phase: 'commentary' }),
+    rateEvent(9500, 'item_completed', { turn_id: turnId, thread_id: id, item: { type: 'Reasoning', id: 'rs-1' } }),
+    ...timedReply(turnId, { start: 10_000, end: 11_000, messageId: 'msg-final', phase: 'final_answer' }),
+    responseUsage(turnId, { start: 11_005, output: 40, reasoning: 10 }),
+    rateEvent(11_100, 'task_complete', { turn_id: turnId }),
+    '',
+  ];
+  await writeFile(path, interleaved.join('\n'));
+  assert.deepEqual((await readHudMetrics(null, { id, path }, { cwd, home })).outputRate, { turnId, tokensPerSecond: 20 });
+
+  const trailingReasoning = [
+    meta,
+    rateEvent(0, 'task_started', { turn_id: turnId }),
+    ...timedReply(turnId, { start: 10_000, end: 11_000, messageId: 'msg-final', phase: 'final_answer' }),
+    rateEvent(11_003, 'item_completed', { turn_id: turnId, thread_id: id, item: { type: 'Reasoning', id: 'rs-late' } }),
+    responseUsage(turnId, { start: 11_005, output: 40, reasoning: 10 }),
+    '',
+  ];
+  await writeFile(path, trailingReasoning.join('\n'));
+  assert.equal((await readHudMetrics(null, { id, path }, { cwd, home })).outputRate, undefined);
+
+  const interleavedCommand = [
+    meta,
+    rateEvent(0, 'task_started', { turn_id: turnId }),
+    ...timedReply(turnId, { start: 8500, end: 9000, messageId: 'msg-commentary', phase: 'commentary' }),
+    rateEvent(9500, 'item_completed', { turn_id: turnId, thread_id: id, item: { type: 'CommandExecution', id: 'cmd-1' } }),
+    ...timedReply(turnId, { start: 10_000, end: 11_000, messageId: 'msg-final', phase: 'final_answer' }),
+    responseUsage(turnId, { start: 11_005, output: 40, reasoning: 10 }),
+    '',
+  ];
+  await writeFile(path, interleavedCommand.join('\n'));
+  assert.equal((await readHudMetrics(null, { id, path }, { cwd, home })).outputRate, undefined);
+});
+
+test('restores cached output rate beyond 512 KiB after an unbilled reply aborts, while dropping rewritten rollouts', async t => {
+  const { cwd, home, path } = await fixture(t);
+  const turnId = 'turn-1';
+  const thread = { id, path };
+  const opts = { cwd, home };
+  const initial = [
+    meta,
+    rateEvent(0, 'task_started', { turn_id: turnId }),
+    ...timedReply(turnId),
+    responseUsage(turnId),
+    rateEvent(11_200, 'task_complete', { turn_id: turnId }),
+    '',
+  ];
+  const hugeOutput = rateRecord(13_000, 'response_item', { type: 'function_call_output', output: 'x'.repeat(540_000) });
+  await writeFile(path, initial.join('\n'));
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, { turnId, tokensPerSecond: 40 });
+
+  await appendFile(path, [rateEvent(12_900, 'task_started', { turn_id: 'turn-2' }), hugeOutput, ''].join('\n'));
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, { turnId, tokensPerSecond: 40 });
+
+  await appendFile(path, [...timedReply('turn-2', { start: 13_100, end: 13_600 }), ''].join('\n'));
+  assert.equal((await readHudMetrics(null, thread, opts)).outputRate, undefined);
+
+  await appendFile(path, rateEvent(13_700, 'turn_aborted', { turn_id: 'turn-2' }) + '\n');
+  assert.deepEqual((await readHudMetrics(null, thread, opts)).outputRate, { turnId, tokensPerSecond: 40 });
+
+  await appendFile(path, [
+    rateEvent(14_000, 'task_started', { turn_id: 'turn-3' }),
+    ...timedReply('turn-3', { start: 14_100, end: 14_500 }),
+    '',
+  ].join('\n'));
+  assert.equal((await readHudMetrics(null, thread, opts)).outputRate, undefined);
+
+  await writeFile(path, [
+    meta,
+    rateRecord(14_600, 'response_item', { type: 'function_call_output', output: 'y'.repeat(560_000) }),
+    rateEvent(14_700, 'turn_aborted', { turn_id: 'turn-3' }),
+    '',
+  ].join('\n'));
+  assert.equal((await readHudMetrics(null, thread, opts)).outputRate, undefined);
 });
 
 test('rounds the context percentage like the native Codex footer', async t => {

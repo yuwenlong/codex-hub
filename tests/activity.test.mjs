@@ -176,7 +176,7 @@ test('the full preview draws the same compact progress, environment, activity, a
   assert.match(lines[2], /^内存 +█████░░░░░ 46% \(10\.3 GB \/ 22\.5 GB\)$/);
   assert.match(lines[3], /^2 AGENTS\.md │ 6 MCPs │ 1 钩子/);
   assert.match(output, /✓ Shell ×20\n▸ Skills \(2\) 已选 superpowers:systematic-debugging, ponytail:ponytail\nMCPs \(2\)/);
-  assert.match(lines.at(-1), /^词元 9\.9M \(输入 678k, 输出 31k, 缓存 9\.2M\) │ 最近输出 ≈7\.7 tok\/s$/);
+  assert.match(lines[4], /^词元 9\.9M \(输入 678k, 输出 31k, 缓存 9\.2M\) │ 最近输出 ≈7\.7 tok\/s$/);
   const colored = renderActivity(previewActivity(), { color: true }).split('\n');
   const sgr = (tone, value) => `\u001b[${tone}m${value}\u001b[0m`;
   assert.deepEqual(colored[0].split(' │ ').slice(0, 3), [
@@ -210,6 +210,49 @@ test('shows a measured text output rate on the token row in the HUD and activity
     assert.doesNotMatch(renderActivity({ ...snapshot, outputTokensPerSecond: 0 }, { embedded }), /tok\/s/);
   }
   assert.match(renderActivity({ ...snapshot, tokens: undefined }), /^最近输出 ≈7\.7 tok\/s$/m);
+});
+
+test('keeps the token and output rate row visible near the top when long activity lists overflow terminal height', () => {
+  const sample = previewActivity();
+  const now = sample.createdAt + 6960;
+  const snapshot = {
+    ...sample,
+    tools: [
+      { name: 'Shell', done: 12 },
+      { name: '文件变更', done: 4 },
+      { name: '网页搜索', done: 2 },
+      { name: '查看图片', done: 1 },
+      { name: '图片生成', done: 1 },
+      { name: 'codegraph/search', server: 'codegraph', done: 3 },
+      { name: 'chrome-devtools/list_pages', server: 'chrome-devtools', done: 2 },
+      { name: 'amap-maps/maps_geo', server: 'amap-maps', done: 1 },
+      { name: 'drawio-mcp/list_pages', server: 'drawio-mcp', done: 1 },
+      { name: 'tavily-remote-mcp/tavily_search', server: 'tavily-remote-mcp', done: 1 },
+      { name: 'context7/query-docs', server: 'context7', running: 1 },
+      { name: 'extra/tool', server: 'extra', done: 1 },
+    ],
+    skills: ['skill-one', 'skill-two', 'skill-three', 'skill-four', 'skill-five'],
+    agents: Array.from({ length: 14 }, (_, index) => ({
+      id: `agent-${index}`, name: `worker-${index}`, model: 'gpt-6.2', reasoning: 'high', status: 'running',
+      startedAtMs: (now - 10 - index) * 1000,
+      task: `检查长任务列表并保持顶部词元与输出速率可见 第${index + 1}号子代理`,
+      activity: '读取 rollout 文件并核对终端面板高度裁剪行数',
+    })),
+    taskProgress: { completed: 2, total: 5, current: '核对面板高度裁剪' },
+  };
+  const tokenLine = /^词元 9\.9M \(输入 678k, 输出 31k, 缓存 9\.2M\) │ 最近输出 ≈7\.7 tok\/s$/m;
+  for (const width of [84, 120]) {
+    const full = renderActivity(snapshot, { now, width }).split('\n');
+    assert.ok(full.length >= 24);
+    for (const height of [9, 12]) {
+      const output = renderActivity(snapshot, { now, width, height });
+      const cropped = output.split('\n');
+      assert.equal(cropped.length, height);
+      assert.match(output, tokenLine);
+      if (width === 120) assert.match(cropped[4], tokenLine);
+      assert.match(cropped.at(-1), /^… 另有 \d+ 行$/);
+    }
+  }
 });
 
 test('grouped quotas show remaining meters, omit invalid or expired data, and preserve activity on small screens', () => {

@@ -543,3 +543,95 @@ test('the HUD prefers the selected Git worktree over the branch saved in the thr
   workspace = join(root, 'workspace-unavailable');
   assert.match(await frame(), /git:\(recorded-branch\)/u);
 });
+
+test('preserves local rollout metrics and output rate when readTurn fails for a resolved thread', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub fallback rollout '));
+  t.after(() => rm(cwd, { force: true, recursive: true }));
+  const launchCwd = join(cwd, 'launch-workspace');
+  const threadWorkspace = join(cwd, 'remote-thread-workspace');
+  await mkdir(launchCwd, { recursive: true });
+  const sessions = join(cwd, 'sessions', '2026', '11', '20');
+  await mkdir(sessions, { recursive: true });
+  const path = join(sessions, `rollout-2026-11-20T11-29-36-${firstThread}.jsonl`);
+  const epoch = Date.UTC(2026, 10, 20, 11, 29, 36);
+  const record = (ms, type, payload) => JSON.stringify({ timestamp: new Date(epoch + ms).toISOString(), type, payload });
+  const event = (ms, type, payload) => record(ms, 'event_msg', { type, ...payload });
+  const text = 'Fallback answer';
+  await writeFile(path, [
+    JSON.stringify({ type: 'session_meta', payload: { id: firstThread } }),
+    event(0, 'task_started', { turn_id: 'turn-1' }),
+    event(1000, 'item_completed', {
+      turn_id: 'turn-1', thread_id: firstThread, started_at_ms: epoch + 500, completed_at_ms: epoch + 1000,
+      item: { type: 'AgentMessage', id: 'msg-1', content: [{ type: 'Text', text }] },
+    }),
+    record(1001, 'response_item', {
+      type: 'message', role: 'assistant', status: 'completed', id: 'msg-1',
+      content: [{ type: 'output_text', text }],
+      internal_chat_message_metadata_passthrough: { turn_id: 'turn-1' },
+    }),
+    record(1005, 'token_usage_record', {
+      thread_id: firstThread, turn_id: 'turn-1', response_id: 'resp-1',
+      usage: { input_tokens: 1000, cached_input_tokens: 200, output_tokens: 25, reasoning_output_tokens: 5 },
+    }),
+    event(1010, 'token_count', {
+      info: { total_token_usage: { total_tokens: 5400, input_tokens: 5300, output_tokens: 100, cached_input_tokens: 2000 } },
+      rate_limits: { plan_type: 'enterprise' },
+    }),
+    '',
+  ].join('\n'));
+
+  let accountUsageReads = 0;
+  let configReads = 0;
+  let usageRequested = Promise.withResolvers();
+  let holdTurns;
+  const hud = createLaunchHud({ cwd: launchCwd, home: cwd, useAccountQuota: false, color: false, connect: async () => ({
+    close() {},
+    async request(method, params) {
+      if (method === 'thread/read') {
+        if (params.threadId === secondThread) throw new Error('missing second thread');
+        return { thread: {
+          id: firstThread, cwd: threadWorkspace, path, model: 'gpt-6.2-thread', reasoningEffort: 'xhigh',
+          gitInfo: { branch: 'thread-branch' }, historyMode: 'paginated',
+        } };
+      }
+      if (method === 'thread/turns/list') {
+        if (holdTurns) return holdTurns.promise;
+        await usageRequested.promise;
+        await rm(path);
+        throw new Error('missing source rollout');
+      }
+      if (method === 'account/usage/read') {
+        accountUsageReads++;
+        usageRequested.resolve();
+        return {};
+      }
+      if (method === 'config/read') {
+        configReads++;
+        return { config: { project_doc_max_bytes: 0 } };
+      }
+      return { data: [] };
+    },
+  }) });
+  t.after(hud.close);
+
+  await hud.readHud({ threadId: firstThread, columns: 100, rows: 12 });
+  await nextTick();
+  const output = await hud.readHud({ threadId: firstThread, columns: 100, rows: 12 });
+  assert.match(output, /^\[gpt-6\.2-thread ◕ xhigh\].*remote-thread-workspace git:\(thread-branch\)/mu);
+  assert.match(output, /^词元 5\.4k \(输入 3\.3k, 输出 100, 缓存 2k\) │ 最近输出 ≈40\.0 tok\/s$/m);
+  assert.equal(accountUsageReads, 1);
+  assert.equal(configReads, 1);
+
+  const switched = await hud.readHud({ threadId: secondThread, columns: 100, rows: 12 });
+  assert.match(switched, /launch-workspace/u);
+  assert.doesNotMatch(switched, /gpt-6\.2-thread|xhigh|thread-branch|remote-thread-workspace|5\.4k|40\.0 tok\/s/u);
+
+  holdTurns = Promise.withResolvers();
+  const aborted = new AbortController();
+  const pending = hud.readHud({ threadId: firstThread, signal: aborted.signal, columns: 100, rows: 12 });
+  await nextTick();
+  aborted.abort();
+  holdTurns.reject(new Error('missing source rollout'));
+  assert.equal(await pending, '');
+  assert.equal(await hud.readHud({ threadId: firstThread, signal: aborted.signal, columns: 100, rows: 12 }), '');
+});
