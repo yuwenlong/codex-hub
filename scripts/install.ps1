@@ -1,12 +1,12 @@
 param(
     [ValidateSet('install', 'uninstall')]
-    [string]$CodexHubAction = 'install'
+    [string]$CodexHudAction = 'install'
 )
 
 & {
     $ErrorActionPreference = 'Stop'
 
-    function Save-CodexHubDownload($url, $destination) {
+    function Save-CodexHudDownload($url, $destination) {
         for ($attempt = 0; ; $attempt++) {
             try {
                 Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $destination -TimeoutSec 60
@@ -51,40 +51,40 @@ param(
 
     $node = (Get-Command node -CommandType Application -ErrorAction SilentlyContinue).Source
     if (-not $node) {
-        throw 'codex-hub: Node.js 22 or newer is required on PATH.'
+        throw 'codex-hud: Node.js 22 or newer is required on PATH.'
     }
     $major = & $node -p "process.versions.node.split('.')[0]"
     if ($LASTEXITCODE -ne 0 -or [int]$major -lt 22) {
-        throw 'codex-hub: Node.js 22 or newer is required on PATH.'
+        throw 'codex-hud: Node.js 22 or newer is required on PATH.'
     }
-    if ($CodexHubAction -eq 'install' -and -not (Get-Command codex -CommandType Application -ErrorAction SilentlyContinue)) {
-        throw 'codex-hub: Codex CLI is required on PATH.'
+    if ($CodexHudAction -eq 'install' -and -not (Get-Command codex -CommandType Application -ErrorAction SilentlyContinue)) {
+        throw 'codex-hud: Codex CLI is required on PATH.'
     }
     if (-not (Get-Command Expand-Archive -ErrorAction SilentlyContinue)) {
-        throw 'codex-hub: Expand-Archive is required.'
+        throw 'codex-hud: Expand-Archive is required.'
     }
 
-    $tempDir = Join-Path ([IO.Path]::GetTempPath()) ('codex-hub-' + [guid]::NewGuid().ToString('N'))
+    $tempDir = Join-Path ([IO.Path]::GetTempPath()) ('codex-hud-' + [guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($tempDir) | Out-Null
     try {
-        $archive = Join-Path $tempDir 'codex-hub.zip'
+        $archive = Join-Path $tempDir 'codex-hud.zip'
         $package = Join-Path $tempDir 'package'
-        $releaseUrl = 'https://github.com/yuwenlong/codex-hub/releases/latest/download/codex-hub.zip'
-        Save-CodexHubDownload $releaseUrl $archive
+        $releaseUrl = 'https://github.com/yuwenlong/codex-hud/releases/latest/download/codex-hud.zip'
+        Save-CodexHudDownload $releaseUrl $archive
         Expand-Archive -LiteralPath $archive -DestinationPath $package
-        $manager = Join-Path $package 'codex-hub/scripts/manage.mjs'
+        $manager = Join-Path $package 'codex-hud/scripts/manage.mjs'
         if (-not (Test-Path -LiteralPath $manager -PathType Leaf)) {
-            throw 'codex-hub: The release ZIP does not contain the installer.'
+            throw 'codex-hud: The release ZIP does not contain the installer.'
         }
-        $codexHubPreviousProfile = $env:CODEX_HUB_PS_PROFILE
+        $codexHudPreviousProfile = $env:CODEX_HUD_PS_PROFILE
         try {
-            $env:CODEX_HUB_PS_PROFILE = $PROFILE.CurrentUserAllHosts
-            & $node $manager $CodexHubAction
+            $env:CODEX_HUD_PS_PROFILE = $PROFILE.CurrentUserAllHosts
+            & $node $manager $CodexHudAction
             if ($LASTEXITCODE -ne 0) {
-                throw "codex-hub: $CodexHubAction failed (exit code $LASTEXITCODE)."
+                throw "codex-hud: $CodexHudAction failed (exit code $LASTEXITCODE)."
             }
         } finally {
-            $env:CODEX_HUB_PS_PROFILE = $codexHubPreviousProfile
+            $env:CODEX_HUD_PS_PROFILE = $codexHudPreviousProfile
         }
     } finally {
         Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue

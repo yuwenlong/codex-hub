@@ -10,7 +10,7 @@ const legacyStatusLine = [
 ]
 
 async function fixture(t, statusLine = null) {
-  const home = await mkdtemp(join(tmpdir(), 'codex-hub config with spaces '))
+  const home = await mkdtemp(join(tmpdir(), 'codex-hud config with spaces '))
   t.after(() => rm(home, { force: true, recursive: true }))
   const config = { tui: { theme: 'default' } }
   if (statusLine !== null) config.tui.status_line = statusLine
@@ -40,7 +40,7 @@ async function fixture(t, statusLine = null) {
 }
 
 async function legacyBackup(home, original, { pending } = {}) {
-  const path = join(home, 'codex-hub-statusline.json')
+  const path = join(home, 'codex-hud-statusline.json')
   const raw = JSON.stringify({ version: 1, original, applied: legacyStatusLine, pending }, null, 2) + '\n'
   await writeFile(path, raw)
   return { path, raw }

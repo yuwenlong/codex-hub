@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { runCli } from './run-cli.mjs';
 
 test('help and preview run without Codex on PATH or a Codex home', (t) => {
-  const temp = mkdtempSync(join(tmpdir(), 'codex hub '));
+  const temp = mkdtempSync(join(tmpdir(), 'codex hud '));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const home = join(temp, 'home');
   const env = { PATH: '', CODEX_HOME: home };
@@ -30,18 +30,32 @@ test('help and preview run without Codex on PATH or a Codex home', (t) => {
 });
 
 test('invalid command lines fail before opening a Codex connection', (t) => {
-  const temp = mkdtempSync(join(tmpdir(), 'codex hub '));
+  const temp = mkdtempSync(join(tmpdir(), 'codex hud '));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   for (const args of [['status', '--thread'], ['install', '--cwd', '.'], ['unknown']]) {
     const result = runCli(temp, args, { timeout: 5000 });
     assert.equal(result.status, 1, result.stderr);
     assert.equal(result.stdout, '');
-    assert.match(result.stderr, /^codex-hub: /);
+    assert.match(result.stderr, /^codex-hud: /);
   }
 });
 
+test('native status line install detects a legacy backup before opening Codex', t => {
+  const home = mkdtempSync(join(tmpdir(), 'codex hud migration '));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const backup = join(home, 'codex-hub-statusline.json');
+  writeFileSync(backup, '{"version":1,"original":["model"],"applied":["project-name"]}');
+  const env = { PATH: '', CODEX_HOME: home };
+  if (process.platform === 'win32') env.SystemRoot = process.env.SystemRoot;
+
+  const result = runCli(home, ['install'], { env, timeout: 5000 });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /codex-hub-statusline\.json.*README/u);
+  assert.equal(existsSync(join(home, 'codex-hud-statusline.json')), false);
+});
+
 test('fresh Codex home reports empty state without creating the directory', (t) => {
-  const temp = mkdtempSync(join(tmpdir(), 'codex hub '));
+  const temp = mkdtempSync(join(tmpdir(), 'codex hud '));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const home = join(temp, 'first run', 'Codex 配置');
   const env = { PATH: '', CODEX_HOME: home };
@@ -69,7 +83,7 @@ test('fresh Codex home reports empty state without creating the directory', (t) 
 });
 
 test('status and redirected watch include a reported cost in the first snapshot', (t) => {
-  const temp = mkdtempSync(join(tmpdir(), 'codex hub cost '));
+  const temp = mkdtempSync(join(tmpdir(), 'codex hud cost '));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const home = join(temp, 'home');
   const id = '01234567-89ab-4cde-8123-456789abcdef';
@@ -93,16 +107,16 @@ require('node:readline').createInterface({ input: createReadStream(null, { fd: 0
     reply(method === 'thread/read' ? { thread } : { data: [] });
   }
 });`;
-  const env = { ...process.env, PATH: temp, CODEX_HOME: home, CODEX_HUB_TEST_NODE: process.execPath };
+  const env = { ...process.env, PATH: temp, CODEX_HOME: home, CODEX_HUD_TEST_NODE: process.execPath };
   if (process.platform === 'win32') {
     const bin = join(temp, 'node_modules', '@openai', 'codex', 'bin');
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(temp, 'codex.cmd'), '@exit /b 17\r\n');
     writeFileSync(join(bin, 'codex.js'), server);
   } else {
-    env.CODEX_HUB_TEST_SERVER = join(temp, 'fixture.cjs');
-    writeFileSync(env.CODEX_HUB_TEST_SERVER, server);
-    writeFileSync(join(temp, 'codex'), '#!/bin/sh\nexec "$CODEX_HUB_TEST_NODE" "$CODEX_HUB_TEST_SERVER" "$@"\n', { mode: 0o700 });
+    env.CODEX_HUD_TEST_SERVER = join(temp, 'fixture.cjs');
+    writeFileSync(env.CODEX_HUD_TEST_SERVER, server);
+    writeFileSync(join(temp, 'codex'), '#!/bin/sh\nexec "$CODEX_HUD_TEST_NODE" "$CODEX_HUD_TEST_SERVER" "$@"\n', { mode: 0o700 });
   }
 
   for (const command of ['status', 'watch']) {

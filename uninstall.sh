@@ -3,12 +3,12 @@ set -euo pipefail
 
 main() {
   codex_home=${CODEX_HOME:-~/.codex}
-  runtime="$codex_home/codex-hub"
+  runtime="$codex_home/codex-hud"
   manager="$runtime/scripts/manage.mjs"
-  marker="$runtime/.codex-hub-managed"
-  backup="$codex_home/codex-hub-statusline.json"
-  shell_record="$codex_home/.codex-hub-shell.json"
-  transaction="$codex_home/.codex-hub-transaction.json"
+  marker="$runtime/.codex-hud-managed"
+  backup="$codex_home/codex-hud-statusline.json"
+  shell_record="$codex_home/.codex-hud-shell.json"
+  transaction="$codex_home/.codex-hud-transaction.json"
   pending=false
   manifest=''
   if [[ -e "$transaction" || -L "$transaction" ]]; then
@@ -18,12 +18,12 @@ main() {
   fi
 
   has_local_runtime() {
-    [[ "$manifest" == codex-hub-runtime-v1$'\n'* && "$manifest"$'\n' == *$'\nscripts/manage.mjs\n'* &&
+    [[ "$manifest" == codex-hud-runtime-v1$'\n'* && "$manifest"$'\n' == *$'\nscripts/manage.mjs\n'* &&
        ! -L "$runtime/scripts" && -f "$manager" && ! -L "$manager" ]] || return 1
     # The manager loads configuration modules even without a backup.
     [[ -d "$runtime/bin" && ! -L "$runtime/bin" && -d "$runtime/lib" && ! -L "$runtime/lib" ]] || return 1
     local file
-    for file in bin/codex-hub.mjs package.json lib/app-server.mjs lib/installation.mjs; do
+    for file in bin/codex-hud.mjs package.json lib/app-server.mjs lib/installation.mjs; do
       [[ -f "$runtime/$file" && ! -L "$runtime/$file" ]] || return 1
     done
     for file in lib/shell.mjs lib/runtime-deps.mjs; do
@@ -39,7 +39,7 @@ main() {
 
   if has_local_runtime; then
     if ! command -v node >/dev/null 2>&1 || ! node -e 'process.exit(process.versions.node.split(".")[0] < 22 ? 1 : 0)'; then
-      echo 'codex-hub: Node.js 22 or newer is required on PATH.' >&2
+      echo 'codex-hud: Node.js 22 or newer is required on PATH.' >&2
       exit 1
     fi
     # A legacy runtime cannot restore both possible values from a pending footer migration.
@@ -55,28 +55,28 @@ main() {
     fi
   fi
 
-  if [[ "$pending" == true || -e "$backup" || -e "$shell_record" || -L "$shell_record" || "$manifest" == codex-hub-runtime-v1$'\n'* ]]; then
+  if [[ "$pending" == true || -e "$backup" || -e "$shell_record" || -L "$shell_record" || "$manifest" == codex-hud-runtime-v1$'\n'* ]]; then
     for tool in curl mktemp rm; do
       if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "codex-hub: $tool is required on PATH." >&2
+        echo "codex-hud: $tool is required on PATH." >&2
         exit 1
       fi
     done
-    bootstrap=$(mktemp "${TMPDIR:-/tmp}/codex-hub-uninstall.XXXXXXXX")
+    bootstrap=$(mktemp "${TMPDIR:-/tmp}/codex-hud-uninstall.XXXXXXXX")
     trap 'rm -f -- "$bootstrap"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     curl -fsSL --proto-redir '=https' --retry 3 --retry-connrefused --retry-max-time 30 \
-      --connect-timeout 10 --max-time 60 'https://raw.githubusercontent.com/yuwenlong/codex-hub/main/scripts/install.sh' -o "$bootstrap"
+      --connect-timeout 10 --max-time 60 'https://raw.githubusercontent.com/yuwenlong/codex-hud/main/scripts/install.sh' -o "$bootstrap"
     if [[ ! $(<"$bootstrap") =~ [^[:space:]] ]]; then
-      echo 'codex-hub: The downloaded installer is empty.' >&2
+      echo 'codex-hud: The downloaded installer is empty.' >&2
       exit 1
     fi
     bash "$bootstrap" uninstall
     exit
   fi
 
-  echo 'codex-hub: No installation to remove.'
+  echo 'codex-hud: No installation to remove.'
 }
 
 main "$@"

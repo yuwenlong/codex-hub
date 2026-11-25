@@ -18,11 +18,11 @@ function fixture(t, shell = '/bin/bash') {
   const bin = join(root, 'fake bin');
   mkdirSync(home);
   mkdirSync(bin);
-  const cli = join(home, 'codex-hub', 'bin', 'codex-hub.mjs');
+  const cli = join(home, 'codex-hud', 'bin', 'codex-hud.mjs');
   mkdirSync(dirname(cli), { recursive: true });
-  mkdirSync(join(home, 'codex-hub', 'lib'));
+  mkdirSync(join(home, 'codex-hud', 'lib'));
   writeFileSync(cli, 'console.log("HUD " + JSON.stringify(process.argv.slice(2)))\n');
-  writeFileSync(join(home, 'codex-hub', 'lib', 'launch.mjs'), '');
+  writeFileSync(join(home, 'codex-hud', 'lib', 'launch.mjs'), '');
   writeFileSync(join(bin, 'codex'), "#!/bin/sh\nprintf 'NATIVE %s %s\\n' \"$1\" \"$2\"\n", { mode: 0o755 });
   const env = { HOME: root, USERPROFILE: root, CODEX_HOME: home, SHELL: shell, PATH: [bin, process.env.PATH].join(delimiter), TERM: 'xterm-256color' };
   const change = (action = 'install', overrides) => updateShellIntegration(home, action, { ...env, ...overrides });
@@ -39,8 +39,8 @@ test('activates the selected Bash profiles and removes only its own bytes', posi
   writeFileSync(profile, '# untouched when .bash_login exists\n');
   chmodSync(rc, 0o640);
   change();
-  assert.match(readFileSync(rc, 'utf8'), /^# user rc.*\n# >>> codex-hub/u);
-  assert.match(readFileSync(login, 'utf8'), /^# preferred login\r\n\n# >>> codex-hub/u);
+  assert.match(readFileSync(rc, 'utf8'), /^# user rc.*\n# >>> codex-hud/u);
+  assert.match(readFileSync(login, 'utf8'), /^# preferred login\r\n\n# >>> codex-hud/u);
   assert.equal(statSync(rc).mode & 0o777, 0o640);
   assert.equal(readFileSync(profile, 'utf8'), '# untouched when .bash_login exists\n');
   const first = readFileSync(rc);
@@ -52,7 +52,7 @@ test('activates the selected Bash profiles and removes only its own bytes', posi
   change('uninstall');
   assert.equal(readFileSync(rc, 'utf8'), '# user rc without a line ending');
   assert.deepEqual(readFileSync(login), Buffer.concat([Buffer.from('# preferred login\r\n'), extra]));
-  assert.equal(existsSync(join(home, '.codex-hub-shell.json')), false);
+  assert.equal(existsSync(join(home, '.codex-hud-shell.json')), false);
 });
 
 test('uses ZDOTDIR and preserves an edited block, then removes an untouched new file on opt-out', posix, t => {
@@ -63,18 +63,18 @@ test('uses ZDOTDIR and preserves an edited block, then removes an untouched new 
   change('install', { ZDOTDIR: config });
   assert.equal(existsSync(join(root, '.zshrc')), false);
   const owned = readFileSync(rc, 'utf8');
-  assert.match(owned, />>> codex-hub/u);
+  assert.match(owned, />>> codex-hud/u);
   const edited = owned.replace('launch --', 'launch -- "edited"');
   writeFileSync(rc, edited);
   change('install', { ZDOTDIR: config });
   assert.equal(readFileSync(rc, 'utf8'), edited);
   change('uninstall');
   assert.equal(readFileSync(rc, 'utf8'), edited);
-  assert.equal(existsSync(join(home, '.codex-hub-shell.json')), true);
+  assert.equal(existsSync(join(home, '.codex-hud-shell.json')), true);
   writeFileSync(rc, owned);
-  change('install', { CODEX_HUB_SHELL: 'none' });
+  change('install', { CODEX_HUD_SHELL: 'none' });
   assert.equal(existsSync(rc), false);
-  assert.equal(existsSync(join(home, '.codex-hub-shell.json')), false);
+  assert.equal(existsSync(join(home, '.codex-hud-shell.json')), false);
 });
 
 test('PowerShell profile preserves a UTF-16 BOM and its exact existing bytes', t => {
@@ -82,7 +82,7 @@ test('PowerShell profile preserves a UTF-16 BOM and its exact existing bytes', t
   const file = join(root, 'profile.ps1');
   const user = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("# 用户配置\r\nWrite-Output 'keep'", 'utf16le')]);
   writeFileSync(file, user);
-  change('install', { CODEX_HUB_PS_PROFILE: file });
+  change('install', { CODEX_HUD_PS_PROFILE: file });
   const installed = readFileSync(file);
   assert.deepEqual(installed.subarray(0, user.length), user);
   assert.match(installed.subarray(2).toString('utf16le'), /function global:codex/u);
@@ -97,10 +97,10 @@ test('PowerShell launcher transports resume and fork arguments without native qu
   const output = join(root, 'observed.json');
   mkdirSync(dirname(helper), { recursive: true });
   copyFileSync(new URL('../lib/shell.mjs', import.meta.url), helper);
-  writeFileSync(join(dirname(helper), 'launch.mjs'), 'import { writeFileSync } from "node:fs";\nexport function launchCodex(args) { writeFileSync(process.env.FIXTURE_ARGV_OUT, JSON.stringify({args, inherited: process.env.CODEX_HUB_SHELL_ARGS})); return 3; }');
+  writeFileSync(join(dirname(helper), 'launch.mjs'), 'import { writeFileSync } from "node:fs";\nexport function launchCodex(args) { writeFileSync(process.env.FIXTURE_ARGV_OUT, JSON.stringify({args, inherited: process.env.CODEX_HUD_SHELL_ARGS})); return 3; }');
   for (const args of [['resume', '--last'], ['-C', 'C:\\path with spaces\\', 'fork', '-p', "user's profile", 'a "quoted" prompt', '']]) {
     const pass = spawnSync(process.execPath, [helper, 'launch'], {
-      env: { ...process.env, CODEX_HUB_SHELL_ARGS: JSON.stringify(args), FIXTURE_ARGV_OUT: output }, encoding: 'utf8',
+      env: { ...process.env, CODEX_HUD_SHELL_ARGS: JSON.stringify(args), FIXTURE_ARGV_OUT: output }, encoding: 'utf8',
     });
     assert.equal(pass.status, 3, pass.stderr);
     assert.deepEqual(JSON.parse(readFileSync(output, 'utf8')), { args });
@@ -110,21 +110,21 @@ test('PowerShell launcher transports resume and fork arguments without native qu
 test('PowerShell dispatches its object pipeline to native Codex instead of the HUD', t => {
   const { cli } = fixture(t);
   const script = shellInit('powershell', cli);
-  assert.match(script, /\$codexHubPipeline = \$MyInvocation\.ExpectingInput/u);
-  assert.match(script, /if \(-not \$codexHubPipeline -and \$/u);
-  assert.match(script, /if \(\$codexHubPipeline\) \{\n\s*\$input \| & \$codexHubNative @args\n\s*\} else \{\n\s*& \$codexHubNative @args/u);
+  assert.match(script, /\$codexHudPipeline = \$MyInvocation\.ExpectingInput/u);
+  assert.match(script, /if \(-not \$codexHudPipeline -and \$/u);
+  assert.match(script, /if \(\$codexHudPipeline\) \{\n\s*\$input \| & \$codexHudNative @args\n\s*\} else \{\n\s*& \$codexHudNative @args/u);
 });
 
 test('updates exactly the recorded PowerShell block without changing the surrounding profile', t => {
   const { root, home, change } = fixture(t);
   const profile = join(root, 'profile.ps1');
-  const statePath = join(home, '.codex-hub-shell.json');
+  const statePath = join(home, '.codex-hud-shell.json');
   const original = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("# 用户\r\n'old setting'", 'utf16le')]);
   writeFileSync(profile, original);
-  change('install', { CODEX_HUB_PS_PROFILE: profile });
+  change('install', { CODEX_HUD_PS_PROFILE: profile });
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
   const currentBlock = state.entries[0].block;
-  const oldBlock = currentBlock.replace('        $codexHubPipeline = $MyInvocation.ExpectingInput', '        $codexHubPipeline = $false');
+  const oldBlock = currentBlock.replace('        $codexHudPipeline = $MyInvocation.ExpectingInput', '        $codexHudPipeline = $false');
   assert.notEqual(currentBlock, oldBlock);
   const separator = Buffer.from('\r\n', 'utf16le');
   const later = Buffer.from("# user added after the block\r\n'new setting'\r\n", 'utf16le');
@@ -132,7 +132,7 @@ test('updates exactly the recorded PowerShell block without changing the surroun
   writeFileSync(profile, config(oldBlock));
   state.entries[0].block = oldBlock;
   writeFileSync(statePath, JSON.stringify(state));
-  change('install', { CODEX_HUB_PS_PROFILE: profile });
+  change('install', { CODEX_HUD_PS_PROFILE: profile });
   assert.deepEqual(readFileSync(profile), config(currentBlock));
   const finished = JSON.parse(readFileSync(statePath, 'utf8')).entries[0];
   assert.equal(finished.block, currentBlock);
@@ -145,10 +145,10 @@ test('updates exactly the recorded PowerShell block without changing the surroun
 test('recovers either side of an interrupted shell block replacement', t => {
   const { root, home, change } = fixture(t);
   const profile = join(root, 'profile.ps1');
-  const statePath = join(home, '.codex-hub-shell.json');
+  const statePath = join(home, '.codex-hud-shell.json');
   const original = '# previous profile contents\n';
   writeFileSync(profile, original);
-  change('install', { CODEX_HUB_PS_PROFILE: profile });
+  change('install', { CODEX_HUD_PS_PROFILE: profile });
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
   const entry = state.entries[0];
   entry.priorBlock = entry.block.replace('$MyInvocation.ExpectingInput', '$false');
@@ -157,7 +157,7 @@ test('recovers either side of an interrupted shell block replacement', t => {
   for (const present of [entry.priorBlock, entry.block]) {
     writeFileSync(profile, prefix + present);
     writeFileSync(statePath, JSON.stringify(state));
-    change('install', { CODEX_HUB_PS_PROFILE: profile });
+    change('install', { CODEX_HUD_PS_PROFILE: profile });
     assert.equal(readFileSync(profile, 'utf8'), prefix + entry.block);
     assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).entries[0].priorBlock, undefined);
 
@@ -215,8 +215,8 @@ function installerFixture(t, root, env, profile) {
 test('serializes two Codex homes sharing one profile and routes the active home', { ...posix, timeout: 10000 }, async t => {
   const { root, home, env, change } = fixture(t);
   const second = join(root, 'other home');
-  const secondCli = join(second, 'codex-hub', 'bin', 'codex-hub.mjs');
-  const secondLauncher = join(second, 'codex-hub', 'lib', 'launch.mjs');
+  const secondCli = join(second, 'codex-hud', 'bin', 'codex-hud.mjs');
+  const secondLauncher = join(second, 'codex-hud', 'lib', 'launch.mjs');
   mkdirSync(dirname(secondCli), { recursive: true });
   mkdirSync(dirname(secondLauncher));
   writeFileSync(secondCli, 'console.log("SECOND " + JSON.stringify(process.argv.slice(2)))');
@@ -231,7 +231,7 @@ test('serializes two Codex homes sharing one profile and routes the active home'
   assert.deepEqual(await first.exit, { status: 0, signal: null });
   assert.deepEqual(await peer.exit, { status: 0, signal: null });
   const owned = readFileSync(profile, 'utf8');
-  assert.equal([...owned.matchAll(/^# >>> codex-hub /gmu)].length, 2);
+  assert.equal([...owned.matchAll(/^# >>> codex-hud /gmu)].length, 2);
 
   const { spawn } = require('node-pty');
   const args = ['--noprofile', '--rcfile', profile, '-ic', 'codex resume --last'];
@@ -241,7 +241,7 @@ test('serializes two Codex homes sharing one profile and routes the active home'
   assert.match(await runPty(spawn, '/bin/bash', args, { ...env, CODEX_HOME: second }), /NATIVE resume --last/u);
   writeFileSync(secondLauncher, '');
   change('uninstall');
-  assert.equal([...readFileSync(profile, 'utf8').matchAll(/^# >>> codex-hub /gmu)].length, 1);
+  assert.equal([...readFileSync(profile, 'utf8').matchAll(/^# >>> codex-hud /gmu)].length, 1);
   assert.match(await runPty(spawn, '/bin/bash', args, { ...env, CODEX_HOME: second }), /SECOND /u);
   updateShellIntegration(second, 'uninstall', env);
   assert.equal(readFileSync(profile, 'utf8'), '# existing settings');
@@ -250,7 +250,7 @@ test('serializes two Codex homes sharing one profile and routes the active home'
 test('reclaims a profile ticket after a forced installer termination', { ...posix, timeout: 10000 }, async t => {
   const { root, home, env, change } = fixture(t);
   const profile = join(root, '.bashrc');
-  const queue = profile + '.codex-hub-tickets';
+  const queue = profile + '.codex-hud-tickets';
   writeFileSync(profile, '# existing settings\n');
   const workers = installerFixture(t, root, env, profile);
   const interrupted = await workers.start(home, 'interrupted', true);
@@ -259,7 +259,7 @@ test('reclaims a profile ticket after a forced installer termination', { ...posi
   assert.equal(existsSync(queue), true);
   assert.equal(readFileSync(profile, 'utf8'), '# existing settings\n');
   change();
-  assert.match(readFileSync(profile, 'utf8'), /^# >>> codex-hub /mu);
+  assert.match(readFileSync(profile, 'utf8'), /^# >>> codex-hud /mu);
   assert.equal(existsSync(queue), false);
   change('uninstall');
   assert.equal(readFileSync(profile, 'utf8'), '# existing settings\n');
@@ -279,7 +279,7 @@ test('restores a shared profile to its original existence in either uninstall or
         const first = creatorGoesFirst ? home : other;
         const last = creatorGoesFirst ? other : home;
         updateShellIntegration(first, 'uninstall', { ...env, CODEX_HOME: first });
-        assert.equal([...readFileSync(profile, 'utf8').matchAll(/^# >>> codex-hub /gmu)].length, 1);
+        assert.equal([...readFileSync(profile, 'utf8').matchAll(/^# >>> codex-hud /gmu)].length, 1);
         updateShellIntegration(last, 'uninstall', { ...env, CODEX_HOME: last });
         assert.equal(existsSync(profile), existed);
         if (existed) assert.equal(readFileSync(profile).length, 0);
@@ -306,7 +306,7 @@ test('keeps user bytes added to an originally absent shared profile', posix, t =
 test('inherits profile creation from an installed 0.2.1 launcher block', posix, t => {
   const { root, home, env } = fixture(t, '/bin/zsh');
   const profile = join(root, '.zshrc');
-  const statePath = join(home, '.codex-hub-shell.json');
+  const statePath = join(home, '.codex-hud-shell.json');
   updateShellIntegration(home, 'install', env);
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
   const current = state.entries[0].block;
@@ -327,10 +327,10 @@ test('inherits profile creation from an installed 0.2.1 launcher block', posix, 
 test('does not inherit profile creation from an incomplete marker block', posix, t => {
   const { root, home, change } = fixture(t, '/bin/zsh');
   const profile = join(root, '.zshrc');
-  const existing = '# >>> codex-hub 1234567890abcdef >>>\n# codex-hub: created this startup profile\n# user content';
+  const existing = '# >>> codex-hud 1234567890abcdef >>>\n# codex-hud: created this startup profile\n# user content';
   writeFileSync(profile, existing);
   change();
-  const record = JSON.parse(readFileSync(join(home, '.codex-hub-shell.json'), 'utf8')).entries[0];
+  const record = JSON.parse(readFileSync(join(home, '.codex-hud-shell.json'), 'utf8')).entries[0];
   assert.equal(record.created, false);
   change('uninstall');
   assert.equal(readFileSync(profile, 'utf8'), existing);
@@ -353,7 +353,7 @@ test('dispatches an ordinary interactive Bash or Zsh command and preserves argv 
     const dialect = shell.endsWith('/bash') ? 'bash' : 'zsh';
     const file = join(root, dialect === 'bash' ? '.bashrc' : '.zshrc');
     change();
-    const command = 'codex "argument with spaces" "it' + "'s ok" + '"; CODEX_HUB_BYPASS=1 codex direct native';
+    const command = 'codex "argument with spaces" "it' + "'s ok" + '"; CODEX_HUD_BYPASS=1 codex direct native';
     const args = dialect === 'bash'
       ? ['--noprofile', '--rcfile', file, '-ic', command]
       : ['-ic', command];

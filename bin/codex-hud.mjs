@@ -5,9 +5,9 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 
-const usage = `Codex Hub
+const usage = `Codex HUD
 
-node ./bin/codex-hub.mjs <命令>
+node ./bin/codex-hud.mjs <命令>
 
   install    配置 Codex CLI 原生状态栏
   uninstall 还原安装前的状态栏设置
@@ -29,7 +29,7 @@ function outputOptions() {
 }
 
 function printDoctor({ installed, overridden, statusLine } = {}) {
-  console.log(installed ? 'Codex Hub 状态栏已配置。' : 'Codex Hub 状态栏待配置。');
+  console.log(installed ? 'Codex HUD 状态栏已配置。' : 'Codex HUD 状态栏待配置。');
   console.log(`tui.status_line = ${statusLine == null ? '（未设置）' : JSON.stringify(statusLine)}`);
   if (overridden) console.log('当前生效的状态栏由其他配置层覆盖。');
 }
@@ -153,12 +153,13 @@ async function main() {
     return;
   }
 
+  const { assertNoLegacyInstallation, install, uninstall, doctor } = await import('../lib/installation.mjs');
+  if (command === 'install') await assertNoLegacyInstallation(home);
   const client = await connect(home);
   try {
-    const { install, uninstall, doctor } = await import('../lib/installation.mjs');
     if (command === 'install') {
       const { changed } = await install(client, home);
-      console.log(changed ? '已配置 Codex Hub 状态栏。请重新打开 Codex。' : 'Codex Hub 状态栏已配置。');
+      console.log(changed ? '已配置 Codex HUD 状态栏。请重新打开 Codex。' : 'Codex HUD 状态栏已配置。');
     } else if (command === 'uninstall') {
       const { changed, preserved } = await uninstall(client, home);
       if (changed) console.log('已还原安装前的状态栏。请重新打开 Codex。');
@@ -176,6 +177,6 @@ try {
   await main();
 } catch (error) {
   const message = (error instanceof Error ? error.message : String(error)).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
-  console.error(`codex-hub: ${message}`);
+  console.error(`codex-hud: ${message}`);
   process.exitCode = 1;
 }

@@ -11,7 +11,7 @@ const id = '1d6c11c9-f1c6-4d02-ae28-a8748071da01';
 const meta = JSON.stringify({ type: 'session_meta', payload: { id } });
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'codex-hub metrics '));
+  const root = await mkdtemp(join(tmpdir(), 'codex-hud metrics '));
   t.after(() => rm(root, { recursive: true, force: true }));
   const home = join(root, 'home');
   const sessions = join(home, 'sessions', '2026', '11', '18');

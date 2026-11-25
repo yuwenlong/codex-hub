@@ -43,7 +43,7 @@ test('launch distinguishes interactive arguments from native commands and displa
 });
 
 async function nativeFixture(t) {
-  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub launch with spaces '));
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hud launch with spaces '));
   t.after(() => rm(cwd, { force: true, recursive: true }));
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATH') delete env[key];
@@ -63,10 +63,10 @@ else {
   } else {
     const file = join(cwd, 'fixture.cjs');
     const executable = join(cwd, 'codex');
-    env.CODEX_HUB_TEST_NODE = process.execPath;
-    env.CODEX_HUB_TEST_SCRIPT = file;
+    env.CODEX_HUD_TEST_NODE = process.execPath;
+    env.CODEX_HUD_TEST_SCRIPT = file;
     await writeFile(file, code);
-    await writeFile(executable, '#!/bin/sh\nexec "$CODEX_HUB_TEST_NODE" "$CODEX_HUB_TEST_SCRIPT" "$@"\n');
+    await writeFile(executable, '#!/bin/sh\nexec "$CODEX_HUD_TEST_NODE" "$CODEX_HUD_TEST_SCRIPT" "$@"\n');
     await chmod(executable, 0o700);
   }
   return { cwd, env };
@@ -79,7 +79,7 @@ test('the CLI passes non-interactive arguments and exit status to the native Cod
   assert.equal(result.status, 23, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), nativeArgs);
   if (process.platform !== 'win32') {
-    const cli = fileURLToPath(new URL('../bin/codex-hub.mjs', import.meta.url));
+    const cli = fileURLToPath(new URL('../bin/codex-hud.mjs', import.meta.url));
     const signalled = spawnSync(process.execPath, [cli, 'launch', '--', 'signal-fixture'], { env, cwd, stdio: 'ignore', timeout: 5000 });
     assert.equal(signalled.signal, 'SIGTERM');
   }
@@ -87,11 +87,11 @@ test('the CLI passes non-interactive arguments and exit status to the native Cod
 
 test('an unavailable PTY dependency falls back before changing Codex arguments or input', async t => {
   const { cwd, env: fixtureEnv } = await nativeFixture(t);
-  const env = { ...fixtureEnv, NODE_PATH: '', TERM: 'xterm-256color', CODEX_HUB_BYPASS: '0' };
+  const env = { ...fixtureEnv, NODE_PATH: '', TERM: 'xterm-256color', CODEX_HUD_BYPASS: '0' };
   for (const name of ['bin', 'lib']) {
     await cp(fileURLToPath(new URL(`../${name}`, import.meta.url)), join(cwd, name), { recursive: true });
   }
-  const cli = join(cwd, 'bin', 'codex-hub.mjs');
+  const cli = join(cwd, 'bin', 'codex-hud.mjs');
   const nativeArgs = ['-C', 'folder with spaces', '命令 & with "quotes"'];
   const { spawn } = require('node-pty');
   async function launchFixture() {
@@ -134,7 +134,7 @@ test('an unavailable PTY dependency falls back before changing Codex arguments o
 });
 
 test('the initial HUD renders local and native fields synchronously without starting a connection', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'codex-hub initial '));
+  const root = await mkdtemp(join(tmpdir(), 'codex-hud initial '));
   t.after(() => rm(root, { force: true, recursive: true }));
   const cwd = join(root, 'fixture workspace');
   await mkdir(cwd);
@@ -167,7 +167,7 @@ test('the initial HUD renders local and native fields synchronously without star
 });
 
 test('the HUD presents live data before initialization and only reads the currently visible thread', async t => {
-  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub isolated launch '));
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hud isolated launch '));
   t.after(() => rm(cwd, { force: true, recursive: true }));
   const connection = Promise.withResolvers();
   let closed = false;
@@ -235,7 +235,7 @@ test('closing the HUD during initialization closes a late connection', async () 
 });
 
 test('the native weekly quota keeps a matching reset time and follows the clock while idle', async t => {
-  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub weekly quota '));
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hud weekly quota '));
   t.after(() => rm(cwd, { force: true, recursive: true }));
   const sessions = join(cwd, 'sessions');
   await mkdir(sessions);
@@ -279,7 +279,7 @@ test('the native weekly quota keeps a matching reset time and follows the clock 
 });
 
 test('a restored thread accepts both windows from the rollout registered under a different filename', async t => {
-  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub rotated quota '));
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hud rotated quota '));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const sessions = join(cwd, 'sessions');
   await mkdir(sessions);
@@ -322,7 +322,7 @@ test('a restored thread accepts both windows from the rollout registered under a
 });
 
 test('a fresh official launch reads the account windows before the first message', async t => {
-  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub cold quota '));
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hud cold quota '));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const start = 1795000000;
   let now = start;
@@ -368,7 +368,7 @@ test('a fresh official launch reads the account windows before the first message
 });
 
 test('a fresh launch keeps unnamed legacy quotas as their own measured windows', async t => {
-  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub legacy cold quota '));
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hud legacy cold quota '));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const now = 1795000000;
   t.mock.method(Date, 'now', () => now * 1000);
@@ -400,7 +400,7 @@ test('a fresh launch keeps unnamed legacy quotas as their own measured windows',
 });
 
 test('cold account quotas stay hidden for a restored, custom, or unconfirmed session', async t => {
-  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub cold quota scope '));
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hud cold quota scope '));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   for (const [label, options, config, recordedInitially] of [
     ['restored thread', { startsNewThread: false }, {}],
@@ -447,7 +447,7 @@ test('cold account quotas stay hidden for a restored, custom, or unconfirmed ses
 });
 
 test('the interactive footer cannot relabel another account quota or leak it to a custom provider', async t => {
-  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub quota source '));
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hud quota source '));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const deferred = Promise.withResolvers();
   let accountReads = 0;
@@ -491,7 +491,7 @@ test('the interactive footer cannot relabel another account quota or leak it to 
 
 test('the HUD prefers the selected Git worktree over the branch saved in the thread', async t => {
   if (spawnSync('git', ['--version']).error?.code === 'ENOENT') return t.skip('Git is unavailable');
-  const root = await mkdtemp(join(tmpdir(), 'codex-hub isolated git '));
+  const root = await mkdtemp(join(tmpdir(), 'codex-hud isolated git '));
   t.after(() => rm(root, { force: true, recursive: true }));
   const repo = join(root, 'repo');
   const linked = join(root, 'linked worktree');
@@ -545,7 +545,7 @@ test('the HUD prefers the selected Git worktree over the branch saved in the thr
 });
 
 test('preserves local rollout metrics and output rate when readTurn fails for a resolved thread', async t => {
-  const cwd = await mkdtemp(join(tmpdir(), 'codex-hub fallback rollout '));
+  const cwd = await mkdtemp(join(tmpdir(), 'codex-hud fallback rollout '));
   t.after(() => rm(cwd, { force: true, recursive: true }));
   const launchCwd = join(cwd, 'launch-workspace');
   const threadWorkspace = join(cwd, 'remote-thread-workspace');

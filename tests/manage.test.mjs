@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { STATUS_LINE } from '../lib/installation.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const backupName = 'codex-hub-statusline.json';
-const transactionName = '.codex-hub-transaction.json';
+const backupName = 'codex-hud-statusline.json';
+const transactionName = '.codex-hud-transaction.json';
 const legacyStatusLine = [
   'model-with-reasoning', 'project-name', 'git-branch', 'context-used',
   'five-hour-limit', 'weekly-limit', 'task-progress',
@@ -25,15 +25,15 @@ createInterface({ input: createReadStream(null, { fd: 0 }) }).on('line', line =>
   const reply = (body) => writeSync(1, JSON.stringify({ id, ...body }) + '\n');
   if (method === 'initialize') reply({ result: {} });
   if (method === 'config/read') {
-    if (process.env.CODEX_HUB_TEST_CREATE_RUNTIME) {
-      mkdirSync(join(process.env.CODEX_HOME, 'codex-hub'), { recursive: true });
+    if (process.env.CODEX_HUD_TEST_CREATE_RUNTIME) {
+      mkdirSync(join(process.env.CODEX_HOME, 'codex-hud'), { recursive: true });
     }
     const config = JSON.parse(readFileSync(file, 'utf8'));
     const layer = { name: { type: 'user', file }, version: '1', config };
     reply({ result: { config, layers: [layer] } });
   }
   if (method === 'config/value/write') {
-    if (process.env.CODEX_HUB_TEST_REJECT_WRITE) {
+    if (process.env.CODEX_HUD_TEST_REJECT_WRITE) {
       reply({ error: { code: -32600, message: 'fixture refused footer write' } });
       return;
     }
@@ -47,10 +47,10 @@ createInterface({ input: createReadStream(null, { fd: 0 }) }).on('line', line =>
 `;
 
 async function fixture(t, homeName = 'custom home') {
-  const temp = await mkdtemp(join(tmpdir(), 'codex hub 安装测试 '));
+  const temp = await mkdtemp(join(tmpdir(), 'codex hud 安装测试 '));
   t.after(() => rm(temp, { force: true, recursive: true }));
   const home = join(temp, homeName);
-  const runtime = join(home, 'codex-hub');
+  const runtime = join(home, 'codex-hud');
   const config = join(home, 'config.toml');
   const backup = join(home, backupName);
   const original = { tui: { theme: 'custom', status_line: ['model'] } };
@@ -59,17 +59,17 @@ async function fixture(t, homeName = 'custom home') {
   const tools = join(temp, 'test path');
   await mkdir(tools);
   const pathKey = Object.keys(process.env).find(key => key.toUpperCase() === 'PATH') ?? 'PATH';
-  const env = { ...process.env, [pathKey]: tools, CODEX_HOME: homeName, CODEX_HUB_SHELL: 'none' };
+  const env = { ...process.env, [pathKey]: tools, CODEX_HOME: homeName, CODEX_HUD_SHELL: 'none' };
   if (process.platform === 'win32') {
     const bin = join(tools, 'node_modules', '@openai', 'codex', 'bin');
     await mkdir(bin, { recursive: true });
     await writeFile(join(tools, 'codex.cmd'), '@exit /b 17\r\n');
     await writeFile(join(bin, 'codex.js'), mockServer);
   } else {
-    env.CODEX_HUB_TEST_SERVER = join(tools, 'app-server.cjs');
-    env.CODEX_HUB_TEST_NODE = process.execPath;
-    await writeFile(env.CODEX_HUB_TEST_SERVER, mockServer);
-    await writeFile(join(tools, 'codex'), '#!/bin/sh\nexec "$CODEX_HUB_TEST_NODE" "$CODEX_HUB_TEST_SERVER" "$@"\n', { mode: 0o700 });
+    env.CODEX_HUD_TEST_SERVER = join(tools, 'app-server.cjs');
+    env.CODEX_HUD_TEST_NODE = process.execPath;
+    await writeFile(env.CODEX_HUD_TEST_SERVER, mockServer);
+    await writeFile(join(tools, 'codex'), '#!/bin/sh\nexec "$CODEX_HUD_TEST_NODE" "$CODEX_HUD_TEST_SERVER" "$@"\n', { mode: 0o700 });
   }
 
   function run(path, args, additionalEnv = {}, nodeArgs = []) {
@@ -100,12 +100,78 @@ function assertSuccess(result) {
 const bundledHost = ['linux', 'darwin', 'win32'].includes(process.platform)
   && ['x64', 'arm64'].includes(process.arch);
 
+for (const [state, contents] of [
+  ['codex-hub-statusline.json', '{"version":1,"original":["model"],"applied":["project-name"]}'],
+  ['codex-hub-statusline.json.lock', null],
+  ['.codex-hub-runtime.lock', null],
+  ['.codex-hub-transaction.json', '{"version":1}'],
+  ['.codex-hub-shell.json', '{"version":1}'],
+  [join('codex-hub', '.codex-hub-managed'), 'codex-hub-runtime-v1\npackage.json\n'],
+]) {
+  test(`blocks migration while ${state} remains`, async t => {
+    const { home, runtime, config, backup, original, manage } = await fixture(t);
+    const path = join(home, state);
+    await mkdir(dirname(path), { recursive: true });
+    if (contents === null) await mkdir(path);
+    else await writeFile(path, contents);
+
+    const result = manage('install');
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /README/u);
+    assert.ok(result.output.includes(state), result.output);
+    await assert.rejects(lstat(runtime), { code: 'ENOENT' });
+    await assert.rejects(lstat(backup), { code: 'ENOENT' });
+    await assert.rejects(lstat(join(home, transactionName)), { code: 'ENOENT' });
+    assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
+    if (contents === null) assert.deepEqual(await readdir(path), []);
+    else assert.equal(await readFile(path, 'utf8'), contents);
+  });
+}
+
+test('installs and uninstalls with user files left in the old runtime', { skip: !bundledHost }, async t => {
+  const { home, config, original, manage } = await fixture(t);
+  const legacyRuntime = join(home, 'codex-hub');
+  const userFile = join(legacyRuntime, 'scripts', 'manage.mjs');
+  const marker = join(legacyRuntime, '.codex-hub-managed');
+  await mkdir(dirname(userFile), { recursive: true });
+  await writeFile(userFile, 'user data');
+  for (const contents of [null, 'codex-hub-runtime-v1\n']) {
+    if (contents) await writeFile(marker, contents);
+    assertSuccess(manage('install'));
+    assertSuccess(manage('uninstall'));
+    assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
+    assert.equal(await readFile(userFile, 'utf8'), 'user data');
+    if (contents) assert.equal(await readFile(marker, 'utf8'), contents);
+  }
+});
+
+test('blocks migration when a launcher block remains without its legacy shell record', async t => {
+  const { temp, home, runtime, config, original, manage } = await fixture(t);
+  const powerShellProfile = join(temp, 'profile.ps1');
+  const block = '# site settings\n# >>> codex-hub 1234567890abcdef >>>\n# old launcher\n# <<< codex-hub 1234567890abcdef <<<\n';
+  for (const [profile, bytes, additionalEnv] of [
+    [join(temp, '.zshrc'), Buffer.from(block), { HOME: temp, ZDOTDIR: temp, CODEX_HUD_SHELL: 'zsh' }],
+    [powerShellProfile, Buffer.from('\uFEFF' + block.replaceAll('\n', '\r\n'), 'utf16le'),
+      { CODEX_HUD_PS_PROFILE: powerShellProfile, CODEX_HUD_SHELL: 'powershell' }],
+  ]) {
+    await writeFile(profile, bytes);
+    const result = manage('install', { additionalEnv });
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /README/u);
+    assert.ok(result.output.includes(profile), result.output);
+    assert.deepEqual(await readFile(profile), bytes);
+    await assert.rejects(lstat(runtime), { code: 'ENOENT' });
+    await assert.rejects(lstat(join(home, '.codex-hud-shell.json')), { code: 'ENOENT' });
+    assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
+  }
+});
+
 test('installs the pinned terminal modules from the local package', { skip: !bundledHost }, async (t) => {
   const { runtime, manage, run } = await fixture(t);
   assertSuccess(manage('install'));
   const result = run('--eval', [
-    'const requireFromHub = require("node:module").createRequire(process.argv[1]);'
-    + 'console.log(typeof requireFromHub("node-pty").spawn, typeof requireFromHub("@xterm/headless").Terminal);',
+    'const requireFromHud = require("node:module").createRequire(process.argv[1]);'
+    + 'console.log(typeof requireFromHud("node-pty").spawn, typeof requireFromHud("@xterm/headless").Terminal);',
     join(runtime, 'lib', 'terminal-host.mjs'),
   ]);
   assertSuccess(result);
@@ -114,7 +180,7 @@ test('installs the pinned terminal modules from the local package', { skip: !bun
 
 test('install and reinstall explain activation when invoked from a subprocess', { skip: !bundledHost || process.platform === 'win32' }, async t => {
   const { temp, manage } = await fixture(t);
-  const additionalEnv = { HOME: temp, ZDOTDIR: temp, CODEX_HUB_SHELL: 'zsh' };
+  const additionalEnv = { HOME: temp, ZDOTDIR: temp, CODEX_HUD_SHELL: 'zsh' };
   for (let run = 0; run < 2; run++) {
     const installed = manage('install', { additionalEnv });
     assertSuccess(installed);
@@ -137,17 +203,17 @@ test('printed activation stays bound to the installed home despite another local
   skip: !bundledHost || process.platform === 'win32',
 }, async t => {
   const { temp, home, runtime, manage } = await fixture(t, "custom 'home'");
-  const receipt = manage('install', { additionalEnv: { HOME: temp, ZDOTDIR: temp, CODEX_HUB_SHELL: 'zsh' } });
+  const receipt = manage('install', { additionalEnv: { HOME: temp, ZDOTDIR: temp, CODEX_HUD_SHELL: 'zsh' } });
   assertSuccess(receipt);
   const activate = receipt.output.split('\n').find(line => line.startsWith('  ') && line.includes('/scripts/activate.sh'));
   assert.ok(activate, receipt.output);
   await writeFile(join(runtime, 'scripts', 'activate.sh'), 'printf "INSTALLED HOME\\n"\n');
   const explicit = receipt.output.split('\n').find(line => line.startsWith('  command env '));
   assert.ok(explicit, receipt.output);
-  await writeFile(join(runtime, 'bin', 'codex-hub.mjs'), 'import { writeSync } from "node:fs"; writeSync(1, process.env.CODEX_HOME + " " + JSON.stringify(process.argv.slice(2)) + "\\n");');
+  await writeFile(join(runtime, 'bin', 'codex-hud.mjs'), 'import { writeSync } from "node:fs"; writeSync(1, process.env.CODEX_HOME + " " + JSON.stringify(process.argv.slice(2)) + "\\n");');
 
   const other = join(temp, 'unrelated home');
-  const otherScripts = join(other, 'codex-hub', 'scripts');
+  const otherScripts = join(other, 'codex-hud', 'scripts');
   await mkdir(otherScripts, { recursive: true });
   await writeFile(join(otherScripts, 'activate.sh'), 'printf "INCORRECT HOME\\n"\n');
   const linked = join(temp, 'linked home');
@@ -190,11 +256,28 @@ test('preserves a nested user file after upgrade and interrupted removal of bund
   assertSuccess(manage('uninstall'));
   assert.equal(await readFile(join(runtime, localFile), 'utf8'), 'local note');
   await assert.rejects(lstat(metadata), { code: 'ENOENT' });
-  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hub-runtime-')), false);
+  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hud-runtime-')), false);
 
   assertSuccess(manage('install'));
   assert.equal(await readFile(join(runtime, localFile), 'utf8'), 'local note');
   assert.equal(JSON.parse(await readFile(metadata, 'utf8')).version, '6.0.0');
+});
+
+test('does not import a substituted configuration module during uninstall', {
+  skip: !bundledHost || process.platform === 'win32',
+}, async t => {
+  const { runtime, manage, temp } = await fixture(t);
+  assertSuccess(manage('install'));
+  const modulePath = join(runtime, 'lib', 'installation.mjs');
+  const external = join(temp, 'unrelated.mjs');
+  await writeFile(external, '// user file\n');
+  await rm(modulePath);
+  await symlink(external, modulePath);
+
+  const result = manage('uninstall', { source: runtime });
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /非 Codex HUD 运行文件.*installation\.mjs/u);
+  assert.equal((await lstat(modulePath)).isSymbolicLink(), true);
 });
 
 test('does not follow a substituted terminal dependency directory during uninstall', { skip: !bundledHost }, async (t) => {
@@ -211,13 +294,13 @@ test('does not follow a substituted terminal dependency directory during uninsta
 
   const result = manage('uninstall');
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /非 Codex Hub 运行文件/u);
+  assert.match(result.output, /非 Codex HUD 运行文件/u);
   assert.equal((await lstat(owned)).isSymbolicLink(), true);
   assert.equal(await readFile(unrelated, 'utf8'), 'other data');
 });
 
 async function interruptRuntimeRename(temp, home, command, extra) {
-  const runtime = join(await realpath(home), 'codex-hub');
+  const runtime = join(await realpath(home), 'codex-hud');
   const checkpoint = join(temp, 'interrupt.cjs');
   const condition = extra
     ? `to.endsWith(${JSON.stringify(join('next', extra))})`
@@ -235,7 +318,7 @@ require('node:module').syncBuiltinESMExports();
 }
 
 async function clearInterruptedLocks(home, backup) {
-  await rmdir(join(home, '.codex-hub-runtime.lock'));
+  await rmdir(join(home, '.codex-hud-runtime.lock'));
   await rmdir(`${backup}.lock`);
 }
 
@@ -258,14 +341,14 @@ async function installBeforeTerminalDependencies(t) {
   const installed = await fixture(t);
   const { runtime, config, backup, original } = installed;
   const files = [
-    'package.json', 'LICENSE', 'bin/codex-hub.mjs', 'scripts/manage.mjs',
+    'package.json', 'LICENSE', 'bin/codex-hud.mjs', 'scripts/manage.mjs',
     'lib/activity.mjs', 'lib/app-server.mjs', 'lib/hud-metrics.mjs', 'lib/installation.mjs',
   ];
   // The v0.1.2 marker owned only the original files, with no dependency or license directories.
   for (const directory of ['bin', 'lib', 'scripts']) await mkdir(join(runtime, directory), { recursive: true });
   for (const file of files) await cp(join(root, file), join(runtime, file));
-  await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'codex-hub', version: '0.1.2' }));
-  await writeFile(join(runtime, '.codex-hub-managed'), ['codex-hub-runtime-v1', ...files, ''].join('\n'));
+  await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'codex-hud', version: '0.1.2' }));
+  await writeFile(join(runtime, '.codex-hud-managed'), ['codex-hud-runtime-v1', ...files, ''].join('\n'));
   await writeFile(config, JSON.stringify({ tui: { ...original.tui, status_line: STATUS_LINE } }));
   await writeFile(backup, JSON.stringify({ version: 1, original: original.tui.status_line, applied: STATUS_LINE }));
   return installed;
@@ -294,7 +377,7 @@ test('upgrades a v0.1.2 runtime with user dependency and license directories aft
   for (const [file, content] of files) assert.equal(await readFile(join(runtime, file), 'utf8'), content);
   const nativePackage = join(runtime, 'node_modules', 'node-pty', 'package.json');
   assert.equal(JSON.parse(await readFile(nativePackage, 'utf8')).version, '1.2.0-beta.18');
-  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hub-runtime-')), false);
+  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hud-runtime-')), false);
 
   assertSuccess(manage('uninstall', { source: runtime }));
   await assert.rejects(lstat(nativePackage), { code: 'ENOENT' });
@@ -313,7 +396,7 @@ for (const [kind, path] of [
   }, async (t) => {
     const { temp, home, runtime, config, backup, manage } = await installBeforeTerminalDependencies(t);
     const target = join(runtime, path);
-    const oldMarker = await readFile(join(runtime, '.codex-hub-managed'), 'utf8');
+    const oldMarker = await readFile(join(runtime, '.codex-hud-managed'), 'utf8');
     const oldConfig = await readFile(config, 'utf8');
     const oldBackup = await readFile(backup, 'utf8');
     await mkdir(dirname(target), { recursive: true });
@@ -329,7 +412,7 @@ for (const [kind, path] of [
     const upgraded = manage('install');
     assert.equal(upgraded.status, 1, upgraded.output);
     assert.ok(upgraded.output.includes(target), upgraded.output);
-    assert.equal(await readFile(join(runtime, '.codex-hub-managed'), 'utf8'), oldMarker);
+    assert.equal(await readFile(join(runtime, '.codex-hud-managed'), 'utf8'), oldMarker);
     assert.equal(await readFile(config, 'utf8'), oldConfig);
     assert.equal(await readFile(backup, 'utf8'), oldBackup);
     await assert.rejects(lstat(join(home, transactionName)), { code: 'ENOENT' });
@@ -344,7 +427,7 @@ for (const [kind, path] of [
 
 test('installs a relocatable runtime and preserves extra files through upgrade and removal', async (t) => {
   const { temp, runtime, config, backup, original, manage, run } = await fixture(t);
-  const cli = join(runtime, 'bin', 'codex-hub.mjs');
+  const cli = join(runtime, 'bin', 'codex-hud.mjs');
   assertSuccess(manage('install'));
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, STATUS_LINE);
   const firstBackup = await readFile(backup, 'utf8');
@@ -356,7 +439,7 @@ test('installs a relocatable runtime and preserves extra files through upgrade a
   for (const name of ['bin', 'lib', 'licenses', 'node_modules', 'scripts', 'package.json', 'LICENSE']) {
     await cp(join(root, name), join(next, name), { recursive: true });
   }
-  await writeFile(join(next, 'package.json'), JSON.stringify({ name: 'codex-hub', version: '9.8.7' }));
+  await writeFile(join(next, 'package.json'), JSON.stringify({ name: 'codex-hud', version: '9.8.7' }));
   assertSuccess(manage('install', { source: next }));
   assert.equal(run(cli, ['--version']).output.trim(), '9.8.7');
   assert.equal(await readFile(backup, 'utf8'), firstBackup);
@@ -373,11 +456,11 @@ test('retries upgrading an owned v0.1.1 footer after the app-server rejects the 
   const { runtime, config, backup, original, manage, run, saveLegacyBackup } = await legacyInstallation(t);
   await saveLegacyBackup();
 
-  const rejected = manage('install', { additionalEnv: { CODEX_HUB_TEST_REJECT_WRITE: '1' } });
+  const rejected = manage('install', { additionalEnv: { CODEX_HUD_TEST_REJECT_WRITE: '1' } });
   assert.equal(rejected.status, 1, rejected.output);
   assert.match(rejected.output, /fixture refused footer write/);
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, legacyStatusLine);
-  const cli = join(runtime, 'bin', 'codex-hub.mjs');
+  const cli = join(runtime, 'bin', 'codex-hud.mjs');
   assert.equal(run(cli, ['--version']).output.trim(), '0.1.1');
 
   assertSuccess(manage('install'));
@@ -477,7 +560,7 @@ test('restores a legacy footer backup without removing a manual copy', async (t)
   await writeFile(backup, JSON.stringify({ version: 1, original: original.tui.status_line, applied: STATUS_LINE }));
   const result = manage('install');
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /codex-hub/);
+  assert.match(result.output, /codex-hud/);
   assertSuccess(manage('uninstall'));
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
   assert.equal(await readFile(join(runtime, 'package.json'), 'utf8'), 'manual copy');
@@ -491,7 +574,7 @@ test('does not follow a runtime directory link', async (t) => {
   await symlink(other, runtime, 'junction');
   const result = manage('install');
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /codex-hub/);
+  assert.match(result.output, /codex-hud/);
   assertSuccess(manage('uninstall'));
   assert.equal((await lstat(runtime)).isSymbolicLink(), true);
   assert.equal(await readFile(join(other, 'package.json'), 'utf8'), 'other data');
@@ -499,7 +582,7 @@ test('does not follow a runtime directory link', async (t) => {
 
 test('failed footer configuration leaves install retryable and uninstall keeps the runtime', async (t) => {
   const { home, runtime, config, backup, original, manage } = await fixture(t);
-  const reject = { additionalEnv: { CODEX_HUB_TEST_REJECT_WRITE: '1' } };
+  const reject = { additionalEnv: { CODEX_HUD_TEST_REJECT_WRITE: '1' } };
   const install = manage('install', reject);
   assert.equal(install.status, 1, install.output);
   assert.match(install.output, /fixture refused footer write/);
@@ -515,8 +598,8 @@ test('failed footer configuration leaves install retryable and uninstall keeps t
   assert.equal(uninstall.status, 1, uninstall.output);
   assert.match(uninstall.output, /fixture refused footer write/);
   assert.equal(await readFile(backup, 'utf8'), firstBackup);
-  assert.equal((await lstat(join(runtime, 'bin', 'codex-hub.mjs'))).isFile(), true);
-  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hub-runtime-')), false);
+  assert.equal((await lstat(join(runtime, 'bin', 'codex-hud.mjs'))).isFile(), true);
+  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hud-runtime-')), false);
   assertSuccess(manage('uninstall'));
   await assert.rejects(lstat(runtime), { code: 'ENOENT' });
 });
@@ -569,7 +652,7 @@ for (const withBackup of [true, false]) {
     assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), withBackup ? original : installed);
     await assert.rejects(lstat(backup), { code: 'ENOENT' });
     await assert.rejects(lstat(join(home, transactionName)), { code: 'ENOENT' });
-    assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hub-runtime-')), false);
+    assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hud-runtime-')), false);
   });
 }
 
@@ -585,13 +668,13 @@ test('interrupted recovery preserves external entries that conflict with a move'
   await writeFile(join(runtime, note), 'outside data');
   const result = manage('uninstall');
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /非 Codex Hub 运行文件/);
+  assert.match(result.output, /非 Codex HUD 运行文件/);
   assert.equal(await readFile(join(runtime, note), 'utf8'), 'outside data');
   assert.equal((await lstat(join(home, transactionName))).isFile(), true);
   const outside = join(home, 'outside');
   await rename(runtime, outside);
 
-  const [staging] = (await readdir(home)).filter(name => name.startsWith('.codex-hub-runtime-'));
+  const [staging] = (await readdir(home)).filter(name => name.startsWith('.codex-hud-runtime-'));
   const conflict = join(home, staging, 'previous', note);
   await writeFile(conflict, 'a second external file');
   const blocked = manage('uninstall');
@@ -626,11 +709,11 @@ require('node:module').syncBuiltinESMExports();
   await assert.rejects(lstat(backup), { code: 'ENOENT' });
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
 
-  await rmdir(join(home, '.codex-hub-runtime.lock'));
+  await rmdir(join(home, '.codex-hud-runtime.lock'));
   assertSuccess(manage('install'));
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, STATUS_LINE);
   assert.equal(await readFile(note, 'utf8'), 'user data');
-  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hub-runtime-')), false);
+  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hud-runtime-')), false);
 });
 
 for (const withExtras of [true, false]) {
@@ -673,7 +756,7 @@ require('node:module').syncBuiltinESMExports();
     assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, STATUS_LINE);
     assert.deepEqual(JSON.parse(await readFile(backup, 'utf8')).original, original.tui.status_line);
     if (withExtras) assert.equal(await readFile(note, 'utf8'), 'user data');
-    assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hub-runtime-')), false);
+    assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hud-runtime-')), false);
   });
 }
 
@@ -700,10 +783,10 @@ require('node:module').syncBuiltinESMExports();
     const interrupted = run(join(runtime, 'scripts', 'manage.mjs'), ['uninstall'], {}, ['--require', preload]);
     assert.equal(interrupted.status, 86, interrupted.output);
     await assert.rejects(lstat(backup), { code: 'ENOENT' });
-    await rmdir(join(home, '.codex-hub-runtime.lock'));
+    await rmdir(join(home, '.codex-hud-runtime.lock'));
 
     if (!withBackup) await writeFile(config, JSON.stringify(original));
-    assertSuccess(run(join(root, 'bin', 'codex-hub.mjs'), ['install']));
+    assertSuccess(run(join(root, 'bin', 'codex-hud.mjs'), ['install']));
     const manualBackup = await readFile(backup, 'utf8');
     if (withBackup) assert.equal(manualBackup, firstBackup);
     const edited = { tui: { ...original.tui, status_line: ['project-name'] } };
@@ -746,7 +829,7 @@ require('node:module').syncBuiltinESMExports();
     const personal = join(next, 'untracked note.txt');
     if (duringCopy) await writeFile(personal, 'personal data');
 
-    if (duringCopy) await rmdir(join(home, '.codex-hub-runtime.lock'));
+    if (duringCopy) await rmdir(join(home, '.codex-hud-runtime.lock'));
     else await clearInterruptedLocks(home, backup);
     assertSuccess(manage('uninstall'));
     await assert.rejects(lstat(marker), { code: 'ENOENT' });
@@ -754,7 +837,7 @@ require('node:module').syncBuiltinESMExports();
       assert.deepEqual(await readdir(next), ['untracked note.txt']);
       assert.equal(await readFile(personal, 'utf8'), 'personal data');
     } else {
-      assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hub-runtime-')), false);
+      assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hud-runtime-')), false);
     }
   });
 }
@@ -766,7 +849,7 @@ test('rejects a transaction marker pointing outside a managed staging directory'
   await writeFile(marker, untrusted);
   const result = manage('uninstall');
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /无法验证 Codex Hub 事务/);
+  assert.match(result.output, /无法验证 Codex HUD 事务/);
   assert.equal(await readFile(marker, 'utf8'), untrusted);
   await assert.rejects(lstat(runtime), { code: 'ENOENT' });
 });
@@ -793,13 +876,13 @@ test('a read-only runtime folder preserves the footer when user files cannot be 
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, STATUS_LINE);
 
   const rejected = manage('uninstall', {
-    source: runtime, additionalEnv: { CODEX_HUB_TEST_REJECT_WRITE: '1' },
+    source: runtime, additionalEnv: { CODEX_HUD_TEST_REJECT_WRITE: '1' },
   });
   assert.equal(rejected.status, 1, rejected.output);
   assert.match(rejected.output, /fixture refused footer write/);
   assert.equal(await readFile(note, 'utf8'), 'user data');
   assert.equal(await readFile(backup, 'utf8'), originalBackup);
-  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hub-runtime-')), false);
+  assert.equal((await readdir(home)).some(name => name.startsWith('.codex-hud-runtime-')), false);
 
   assertSuccess(manage('uninstall', { source: runtime }));
   assert.equal(await readFile(note, 'utf8'), 'user data');
@@ -808,9 +891,9 @@ test('a read-only runtime folder preserves the footer when user files cannot be 
 
 test('leaves a manual directory created during configuration intact', async (t) => {
   const { runtime, config, original, manage } = await fixture(t);
-  const result = manage('install', { additionalEnv: { CODEX_HUB_TEST_CREATE_RUNTIME: '1' } });
+  const result = manage('install', { additionalEnv: { CODEX_HUD_TEST_CREATE_RUNTIME: '1' } });
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /非 Codex Hub 运行文件/);
+  assert.match(result.output, /非 Codex HUD 运行文件/);
   assert.deepEqual(await readdir(runtime), []);
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')), original);
 });
@@ -830,7 +913,7 @@ let ran = false;
 function manualInstall() {
   if (ran) return;
   ran = true;
-  const result = spawnSync(process.execPath, [${JSON.stringify(join(root, 'bin', 'codex-hub.mjs'))}, 'install'], { stdio: 'inherit' });
+  const result = spawnSync(process.execPath, [${JSON.stringify(join(root, 'bin', 'codex-hud.mjs'))}, 'install'], { stdio: 'inherit' });
   if (result.status !== 0) throw new Error('fixture manual install failed');
   fs.mkdirSync(${JSON.stringify(runtime)});
 }
@@ -847,7 +930,7 @@ syncBuiltinESMExports();
 `);
   const result = run(join(root, 'scripts', 'manage.mjs'), ['install'], {}, ['--require', preload]);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /非 Codex Hub 运行文件/);
+  assert.match(result.output, /非 Codex HUD 运行文件/);
   assert.deepEqual(await readdir(runtime), []);
   assert.deepEqual(JSON.parse(await readFile(config, 'utf8')).tui.status_line, STATUS_LINE);
   assert.deepEqual(JSON.parse(await readFile(backup, 'utf8')).original, original.tui.status_line);

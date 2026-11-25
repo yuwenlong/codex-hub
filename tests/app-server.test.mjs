@@ -16,9 +16,9 @@ readline.createInterface({input: createReadStream(null, { fd: 0 })}).on('line', 
   const message = JSON.parse(line)
   const { id, method, params } = message
   if (method === 'initialize') {
-    if (params.clientInfo.name !== 'codex_hub') process.exit(2)
+    if (params.clientInfo.name !== 'codex_hud') process.exit(2)
     capabilities = params.capabilities ?? null
-    reply({ id, result: { userAgent: 'codex_hub/0.170.0 (Fixture OS) fixture (codex_hub; 0.1.2)' } })
+    reply({ id, result: { userAgent: 'codex_hud/0.170.0 (Fixture OS) fixture (codex_hud; 0.1.2)' } })
   } else if (method === 'initialized') {
     initialized = true
   } else if (!initialized) {
@@ -35,7 +35,7 @@ readline.createInterface({input: createReadStream(null, { fd: 0 })}).on('line', 
 `
 
 async function fixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'codex-hub path with spaces '))
+  const directory = await mkdtemp(join(tmpdir(), 'codex-hud path with spaces '))
   t.after(() => rm(directory, { force: true, recursive: true }))
   const env = { ...process.env, PATH: directory }
   if (process.platform === 'win32') {
@@ -47,10 +47,10 @@ async function fixture(t) {
     const script = join(directory, 'app-server.cjs')
     const executable = join(directory, 'codex')
     await writeFile(script, server)
-    await writeFile(executable, '#!/bin/sh\nexec "$CODEX_HUB_TEST_NODE" "$CODEX_HUB_TEST_SERVER" "$@"\n')
+    await writeFile(executable, '#!/bin/sh\nexec "$CODEX_HUD_TEST_NODE" "$CODEX_HUD_TEST_SERVER" "$@"\n')
     await chmod(executable, 0o700)
-    env.CODEX_HUB_TEST_NODE = process.execPath
-    env.CODEX_HUB_TEST_SERVER = script
+    env.CODEX_HUD_TEST_NODE = process.execPath
+    env.CODEX_HUD_TEST_SERVER = script
   }
   return { cwd: directory, env }
 }
@@ -97,7 +97,7 @@ test('an optional request can time out while the app server stays open', { timeo
 
 test('explains when Codex is unavailable', async t => {
   const { openClient } = await import('../lib/app-server.mjs')
-  const directory = await mkdtemp(join(tmpdir(), 'codex-hub empty PATH '))
+  const directory = await mkdtemp(join(tmpdir(), 'codex-hud empty PATH '))
   t.after(() => rm(directory, { force: true, recursive: true }))
   await assert.rejects(
     openClient({ cwd: directory, env: { ...process.env, PATH: directory } }),

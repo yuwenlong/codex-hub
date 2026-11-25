@@ -3,7 +3,7 @@ import { closeSync, openSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const cli = fileURLToPath(new URL('../bin/codex-hub.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('../bin/codex-hud.mjs', import.meta.url));
 
 export function runCli(directory, args, options) {
   const stdoutFile = join(directory, 'stdout');

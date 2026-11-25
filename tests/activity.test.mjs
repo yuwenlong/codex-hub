@@ -181,7 +181,7 @@ test('the full preview draws the same compact progress, environment, activity, a
   const sgr = (tone, value) => `\u001b[${tone}m${value}\u001b[0m`;
   assert.deepEqual(colored[0].split(' │ ').slice(0, 3), [
     sgr(36, '[GPT-6.2-Astra ● max]'),
-    sgr(33, 'codex-hub') + sgr(35, ' git:(') + sgr(36, 'main') + sgr(35, ')'),
+    sgr(33, 'codex-hud') + sgr(35, ' git:(') + sgr(36, 'main') + sgr(35, ')'),
     sgr(2, 'Codex v0.170.0'),
   ]);
   assert.equal(colored[1].split(' │ ')[0],

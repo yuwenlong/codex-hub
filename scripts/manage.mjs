@@ -6,15 +6,15 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bundledDependencyFiles, dependencyLicenses, hostDependencyFiles } from '../lib/runtime-deps.mjs';
-import { configuredShell, shellQuote, updateShellIntegration } from '../lib/shell.mjs';
+import { assertNoLegacyShellIntegration, configuredShell, shellQuote, updateShellIntegration } from '../lib/shell.mjs';
 
 const source = resolve(fileURLToPath(new URL('../', import.meta.url)));
-const cli = 'bin/codex-hub.mjs';
+const cli = 'bin/codex-hud.mjs';
 const activation = 'scripts/activate.sh';
-const marker = '.codex-hub-managed';
-const owner = 'codex-hub-runtime-v1';
-const transactionName = '.codex-hub-transaction.json';
-const stagingPrefix = '.codex-hub-runtime-';
+const marker = '.codex-hud-managed';
+const owner = 'codex-hud-runtime-v1';
+const transactionName = '.codex-hud-transaction.json';
+const stagingPrefix = '.codex-hud-runtime-';
 const folders = ['bin', 'lib', 'scripts'];
 const baseFiles = ['package.json', 'LICENSE', cli, 'scripts/manage.mjs'];
 const required = [
@@ -28,7 +28,7 @@ const inspect = path => lstatSync(path, { bigint: true, throwIfNoEntry: false })
 const fileKey = name => process.platform === 'win32' ? name.toLowerCase() : name;
 
 function conflict(path) {
-  return new Error(`路径已有非 Codex Hub 运行文件，请移走冲突路径后重试：${path}`);
+  return new Error(`路径已有非 Codex HUD 运行文件，请移走冲突路径后重试：${path}`);
 }
 
 function isManagedFileList(files) {
@@ -46,7 +46,7 @@ function ownedFiles(runtime) {
 
   const [header, ...files] = readFileSync(path, 'utf8').trimEnd().split('\n');
   if (header !== owner || !isManagedFileList(files)) {
-    throw new Error(`无法验证 Codex Hub 安装标记：${path}`);
+    throw new Error(`无法验证 Codex HUD 安装标记：${path}`);
   }
   return files;
 }
@@ -118,12 +118,18 @@ function listExtras(runtime, files, next, relatedFiles = []) {
   return extras;
 }
 
+function installationPath(directory) {
+  const library = join(directory, 'lib');
+  if (!inspect(library)?.isDirectory()) throw conflict(library);
+  const path = join(library, 'installation.mjs');
+  if (!inspect(path)?.isFile()) throw conflict(path);
+  return path;
+}
+
 async function configure(directory, home, command, { publish, upgrade = false, expectedBackupId } = {}) {
-  const libraryDirectory = join(directory, 'lib');
-  if (!inspect(libraryDirectory)?.isDirectory()) throw conflict(libraryDirectory);
-  const installationModule = join(libraryDirectory, 'installation.mjs');
-  const appServerModule = join(libraryDirectory, 'app-server.mjs');
-  for (const file of [installationModule, appServerModule, join(directory, 'package.json')]) {
+  const installationModule = installationPath(directory);
+  const appServerModule = join(dirname(installationModule), 'app-server.mjs');
+  for (const file of [appServerModule, join(directory, 'package.json')]) {
     if (!inspect(file)?.isFile()) throw conflict(file);
   }
   const [installation, { openClient }] = await Promise.all([
@@ -178,7 +184,7 @@ function writeTransaction(home, record) {
   const staging = join(home, record.staging);
   const temp = join(staging, 'transaction.json');
   if (!validTransaction(record)) {
-    throw new Error(`无法验证 Codex Hub 事务：${path}`);
+    throw new Error(`无法验证 Codex HUD 事务：${path}`);
   }
   const preceding = record.phase === 'switching' ? 'preparing' : 'switching';
   if (record.phase !== 'preparing') {
@@ -222,7 +228,7 @@ function validTransaction(record) {
   const hasBackupId = record?.command === 'uninstall' && record.phase !== 'preparing';
   const validBackupId = id => typeof id === 'string' && /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/u.test(id);
   return record?.version === 1 && typeof record.staging === 'string'
-    && /^\.codex-hub-runtime-[A-Za-z0-9]{6}$/u.test(record.staging)
+    && /^\.codex-hud-runtime-[A-Za-z0-9]{6}$/u.test(record.staging)
     && ['install', 'uninstall'].includes(record.command)
     && ['preparing', 'switching', 'committed'].includes(record.phase)
     && isManagedFileList(record.files) && Boolean(record.files.length) === (record.command === 'install')
@@ -237,7 +243,7 @@ function readTransaction(home) {
   const path = join(home, transactionName);
   const entry = inspect(path);
   if (!entry) return null;
-  const invalid = () => new Error(`无法验证 Codex Hub 事务：${path}`);
+  const invalid = () => new Error(`无法验证 Codex HUD 事务：${path}`);
   if (!entry.isFile()) throw invalid();
   let record;
   try {
@@ -272,7 +278,7 @@ function restoreRuntime(runtime, previous, next, original, candidate, files) {
 
 async function recoverRuntimeChange(home, record, previous, next, rollback) {
   const { original, candidate, files } = record;
-  const runtime = join(home, 'codex-hub');
+  const runtime = join(home, 'codex-hud');
   const current = directoryId(runtime);
   const oldLocation = directoryId(previous);
   const newLocation = directoryId(next);
@@ -323,13 +329,13 @@ async function recoverTransaction(home, { rollback = false } = {}) {
 
 async function manage(home, command) {
   await recoverTransaction(home);
-  const runtime = join(home, 'codex-hub');
+  const runtime = join(home, 'codex-hud');
   const files = ownedFiles(runtime);
   const installing = command === 'install';
   if (installing && files === null && inspect(runtime)) throw conflict(runtime);
   if (!installing && !files?.length) {
     await configure(source, home, command);
-    console.log('Codex Hub 已卸载。');
+    console.log('Codex HUD 已卸载。');
     return;
   }
 
@@ -388,7 +394,7 @@ async function manage(home, command) {
   }
   writeTransaction(home, { ...record, phase: 'committed' });
   await recoverTransaction(home);
-  console.log(installing ? `Codex Hub 已安装至 ${runtime}` : 'Codex Hub 已卸载。');
+  console.log(installing ? `Codex HUD 已安装至 ${runtime}` : 'Codex HUD 已卸载。');
 }
 
 async function main() {
@@ -401,22 +407,27 @@ async function main() {
   if (command === 'install') mkdirSync(configuredHome, { recursive: true, mode: 0o700 });
   else if (!inspect(configuredHome)) return;
   const home = realpathSync(configuredHome);
-  const lock = join(home, '.codex-hub-runtime.lock');
+  const lock = join(home, '.codex-hud-runtime.lock');
   try {
     mkdirSync(lock, { mode: 0o700 });
   } catch (error) {
     if (error.code !== 'EEXIST') throw error;
     // shortcut: forced interruption may leave an empty lock directory.
-    throw new Error(`另一项 Codex Hub 安装或卸载正在进行。确认进程已退出后可删除空锁目录：${lock}`);
+    throw new Error(`另一项 Codex HUD 安装或卸载正在进行。确认进程已退出后可删除空锁目录：${lock}`);
   }
   try {
+    if (command === 'install') {
+      const { assertNoLegacyInstallation } = await import(pathToFileURL(installationPath(source)));
+      await assertNoLegacyInstallation(home);
+      assertNoLegacyShellIntegration();
+    }
     await manage(home, command);
     updateShellIntegration(home, command);
     if (command === 'install') {
       const shell = configuredShell(home);
       if (shell === 'bash' || shell === 'zsh') {
         const shellName = shell === 'bash' ? 'Bash' : 'Zsh';
-        const runtime = join(home, 'codex-hub');
+        const runtime = join(home, 'codex-hud');
         console.log(`在新开的 ${shellName} 中运行 codex。若当前终端也使用 ${shellName} 和同一份启动配置，可先运行以下命令。`);
         console.log(`  [ "\${CODEX_HOME:-$HOME/.codex}" -ef ${shellQuote(home)} ] && . ${shellQuote(join(runtime, activation))}`);
         console.log('配置目录或 shell 不匹配时，可用 README 中的当前在线安装命令，或直接启动本次安装。');
@@ -424,7 +435,7 @@ async function main() {
       } else if (shell === 'powershell') {
         console.log('请新开 PowerShell 窗口，再运行 codex。');
       } else {
-        console.log('请使用 README 中的显式启动命令打开 Codex Hub。');
+        console.log('请使用 README 中的显式启动命令打开 Codex HUD。');
       }
     }
   } finally {
@@ -435,6 +446,6 @@ async function main() {
 try {
   await main();
 } catch (error) {
-  console.error(`codex-hub: ${error.message.replace(/[\p{Cc}\p{Cf}]/gu, ' ')}`);
+  console.error(`codex-hud: ${error.message.replace(/[\p{Cc}\p{Cf}]/gu, ' ')}`);
   process.exitCode = 1;
 }

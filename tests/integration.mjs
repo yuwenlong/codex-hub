@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { runCli } from './run-cli.mjs';
 
 function createWorkspace(t, { linkedHome = false } = {}) {
-  const temp = mkdtempSync(join(tmpdir(), 'codex hub 验证 '));
+  const temp = mkdtempSync(join(tmpdir(), 'codex hud 验证 '));
   t.after(() => rmSync(temp, { recursive: true, force: true }));
   const home = join(temp, 'Codex 配置');
   const cwd = join(temp, '测试 项目');
@@ -48,7 +48,7 @@ test('native Codex config preserves settings and restores the status line in a l
   assert.match(restored, /# 原有配置/);
 });
 
-test('uninstall removes a status line introduced by Codex Hub', (t) => {
+test('uninstall removes a status line introduced by Codex HUD', (t) => {
   const { config, run } = createWorkspace(t);
   writeFileSync(config, '[tui]\nnotifications = false\n');
   run('install');

@@ -30,12 +30,12 @@ async function archive(output, tree) {
     if (!lstatSync(path, { throwIfNoEntry: false })?.isFile() || relative(path, realpathSync(path))) {
       throw new Error(`发行包缺少有效的依赖文件：${file}`);
     }
-    return [`--prefix=codex-hub/${posix.dirname(file)}/`, `--add-file=${file}`];
+    return [`--prefix=codex-hud/${posix.dirname(file)}/`, `--add-file=${file}`];
   });
-  const scratch = mkdtempSync(join(tmpdir(), 'codex-hub-release-'));
+  const scratch = mkdtempSync(join(tmpdir(), 'codex-hud-release-'));
   try {
-    const zipped = join(scratch, 'codex-hub.zip');
-    await git('archive', '--format=zip', ...added, '--prefix=codex-hub/', `--output=${zipped}`, object);
+    const zipped = join(scratch, 'codex-hud.zip');
+    await git('archive', '--format=zip', ...added, '--prefix=codex-hud/', `--output=${zipped}`, object);
     copyFileSync(zipped, output, constants.COPYFILE_EXCL);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -49,6 +49,6 @@ try {
   }
   await archive(output, tree);
 } catch (error) {
-  console.error(`codex-hub: ${error.message.replace(/[\p{Cc}\p{Cf}]+/gu, ' ').trim()}`);
+  console.error(`codex-hud: ${error.message.replace(/[\p{Cc}\p{Cf}]+/gu, ' ').trim()}`);
   process.exitCode = 1;
 }
