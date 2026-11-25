@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -7,7 +8,8 @@ import { runCli } from './run-cli.mjs';
 
 function createWorkspace(t, { linkedHome = false } = {}) {
   const temp = mkdtempSync(join(tmpdir(), 'codex hud 验证 '));
-  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  // Wait for transient Windows locks on the Codex home.
+  t.after(() => rm(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const home = join(temp, 'Codex 配置');
   const cwd = join(temp, '测试 项目');
   mkdirSync(home);
